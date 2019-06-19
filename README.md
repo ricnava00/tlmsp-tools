@@ -1,7 +1,3 @@
-# TLMSP Tools
+# tlmsp-tools
 
-Tools for creating and testing TLMSP (ETSI TS 103 523-2) clients, servers, and middleboxes.
-
-## Licensing information
-
-Released under the ETSI Software License (see LICENSE).
+Tools for creating and testing TLMSP (ETSI TS 103 523-2) clients and servers.

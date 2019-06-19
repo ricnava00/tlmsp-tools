@@ -1,0 +1,72 @@
+{
+    "context" : [
+	{
+	    "id" : 1,
+	    "tag" : "context 1",
+	    "comment" : "This is context 1",
+	    "purpose" : "Application-specific",
+	    "audit" : false
+	},
+
+	{
+	    "id" : 2
+	}
+    ],
+
+    activity : [
+	{
+	    "tag" : "activity-1",
+	    "match" : {
+		"at" : 0,
+		"every" : 500,
+	    },
+	    "action" : {
+		"send-after" : {
+		    "context" : 2,
+		    "data" : "ping"
+		}
+	    }
+	},
+
+	{
+	    "tag" : "activity-2",
+	    "match" : {
+		"which" : "*",
+		"data" : "ping"
+	    },
+	    "action" : {
+		"reply" : {
+		    "context" : 2,
+		    "data" : "pong"
+		}
+	    }
+	}
+    ],
+
+    "client" : {
+	"version" : "v1.0",
+	"address" : "tlmsp://client_hostname",
+	"function" : "activity-1" 
+    },
+
+    "server" : {
+	"address" : "tlmsp://server_hostname:port",
+	"cert-file" : "cert.pem",
+	"cert-key-file" : "key.pem",
+	"function" : "activity-2"
+    },
+
+    "middlebox" : {
+	"tag" : "mbox1",
+	"address" : "tlmsp://middlebox_hostname:port",
+	"cert-file" : "mbox1-cert.pem",
+	"cert-key-file" : "mbox1-key.pem",
+	"transparent" : false,
+	"discovered" : false,
+	"context" : {
+            "which" : [ "context 1", 2 ],
+            "access" : "rw"
+	}
+    }
+}
+

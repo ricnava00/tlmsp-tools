@@ -1,0 +1,73 @@
+context {
+    id = 1
+    tag = context-1
+}
+
+activity {
+    tag = send-ping
+
+    match {
+        every = 500
+    }
+
+    action {
+        send-after {
+            context = context-1
+            data = "ping"
+        }
+    }
+}
+
+activity {
+    tag = make-PING
+
+    match {
+        which = context-1
+        data = "ping"
+    }
+
+    action {
+        send-replace {
+            context = context-1
+            data = "PING"
+        }
+    }
+}
+
+activity {
+    tag = reply-PONG
+
+    match {
+        which = context-1
+        data = "PING"
+    }
+
+    action {
+        send-replace {
+            context = context-1
+            data = "PONG"
+        }
+    }
+}
+
+client {
+    address = tlmsp://localhost
+    function = send-ping
+}
+
+middlebox {
+    tag = mbox1
+    address = tlmsp://localhost:20851
+
+    context {
+        which = context-1
+        access = rw
+    }
+
+    function-to-server = make-PING
+}
+
+server {
+    address = tlmsp://localhost:23812
+    function = reply-PONG
+}

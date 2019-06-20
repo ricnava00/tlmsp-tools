@@ -10,11 +10,13 @@ tlmsp-server | Server program
 
 # Building
 
+```
 git clone git@forge.etsi.org:cyber/tlmsp-tools.git
 git clone git@forge.etsi.org:cyber/tlmsp-openssl.git
 mkdir tlmsp-install
 cd tlmsp-tools/build
 ./initial-build.sh $(realpath ../../tlmsp-install)
+```
 
 The tools can then be run directly out of tlmsp-tools/, or more
 generally by adding the tlmsp-install/bin path to PATH and

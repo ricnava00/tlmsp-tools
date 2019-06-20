@@ -1433,6 +1433,7 @@ demo_activity_apply_match_delete_drop_or_forward(struct demo_connection *log_con
 {
 	SSL *write_q_ssl = write_q->conn->ssl;
 	TLMSP_Container *container, *new_container;
+	struct container_queue_entry *entry;
 	const uint8_t *src;
 	size_t delete_or_forward_bytes;
 
@@ -1515,8 +1516,10 @@ demo_activity_apply_match_delete_drop_or_forward(struct demo_connection *log_con
 	 * the matched part, leaving the rest of the data in the queue for
 	 * future matching.
 	 */
-	container = container_queue_remove_head(read_q);
+
 	if (match_range->last_remainder != 0) {
+		entry = container_queue_head_entry(read_q);
+		container = entry->container;
 		delete_or_forward_bytes = TLMSP_container_length(container) -
 		    match_range->last_remainder;
 		if (!drop_all && !delete_match) {
@@ -1545,7 +1548,10 @@ demo_activity_apply_match_delete_drop_or_forward(struct demo_connection *log_con
 		src = TLMSP_container_get_data(container); 
 		TLMSP_container_set_data(container, &src[delete_or_forward_bytes],
 		    match_range->last_remainder);
+		entry->length = match_range->last_remainder;
+		read_q->length -= delete_or_forward_bytes;
 	} else {
+		container = container_queue_remove_head(read_q);
 		if (drop_all) {
 			demo_conn_log(5, log_conn, "Freeing final match container "
 			    "(context=%u, length=%zu)",

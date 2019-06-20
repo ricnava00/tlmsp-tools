@@ -297,7 +297,7 @@ accept_cb(EV_P_ ev_io *w, int revents)
 	unsigned int i;
 
 	for (i = 0; i < middlebox->accept_batch_limit; i++) {
-		sock = accept(middlebox->listen_socket, NULL, NULL);
+		sock = accept4(middlebox->listen_socket, NULL, NULL, SOCK_NONBLOCK);
 		if (sock == -1)
 			break;
 		
@@ -386,7 +386,7 @@ conn_cb(EV_P_ ev_io *w, int revents)
 	demo_connection_events_arrived(conn, revents);
 
 	if (revents & EV_ERROR) {
-		demo_conn_log(1, conn, "Socket error");
+		demo_conn_print_error(conn, "Socket error");
 		connection_died(conn);
 		goto done;
 	}
@@ -398,17 +398,18 @@ do_handshake:
 		    conn_to_server->ssl, &ssl_error);
 		switch (result) {
 		case 0:
-			demo_conn_log(1, conn, "Handshake terminated by protocol");
+			demo_conn_print_error(conn, "Handshake terminated by protocol");
 			connection_died(conn);
 			break;
 		case 1:
-			demo_conn_log(2, conn, "Handshake complete");
+			demo_conn_log(1, conn, "Handshake complete");
 			demo_connection_set_phase(conn, DEMO_CONNECTION_PHASE_APPLICATION);
 			demo_connection_wait_for(conn, EV_READ);
 			break;
 		default:
 			switch (ssl_error) {
 			case SSL_ERROR_WANT_OUTBOUND_CONN:
+				demo_conn_log(5, conn, "SSL_ERROR_WANT_OUTBOUND_CONN");
 				/*
 				 * Establish outbound connection and
 				 * re-enter handshake.
@@ -419,13 +420,16 @@ do_handshake:
 					goto do_handshake;
 				break;
 			case SSL_ERROR_WANT_READ:
+				demo_conn_log(5, conn, "SSL_ERROR_WANT_READ");
 				demo_connection_wait_for(conn_to_client, EV_READ);
 				demo_connection_wait_for(conn_to_server, EV_READ);
 				break;
 			case SSL_ERROR_WANT_CLIENT_WRITE:
+				demo_conn_log(5, conn, "SSL_ERROR_WANT_CLIENT_WRITE");
 				demo_connection_wait_for(conn_to_client, EV_WRITE);
 				break;
 			case SSL_ERROR_WANT_SERVER_WRITE:
+				demo_conn_log(5, conn, "SSL_ERROR_WANT_SERVER_WRITE");
 				demo_connection_wait_for(conn_to_server, EV_WRITE);
 				break;
 			default:
@@ -476,13 +480,6 @@ do_handshake:
 				goto do_handshake;
 				break;
 			}
-			/*
-			 * As processing read data above may have added to
-			 * an otherwise empty write queue on the other side,
-			 * ensure response to EV_WRITE on the other side.
-			 */
-			if (demo_connection_writes_pending(conn))
-				demo_connection_wait_for(conn->other_side, EV_WRITE);
 		}
 
 		/*
@@ -491,6 +488,7 @@ do_handshake:
 		 */
 		if (demo_connection_wait_events(conn) == 0)
 			demo_connection_wait_for(conn, EV_READ);
+		break;
 	default:
 		demo_conn_print_error(conn,
 		    "Unexpected connection phase %d", conn->phase);
@@ -538,6 +536,13 @@ read_containers(struct demo_connection *conn)
 	do {
 		ssl_result = TLMSP_container_read(ssl, &container);
 		if (ssl_result > 0) {
+			demo_conn_log(2, conn, "Received container (length=%u) "
+			    "in context %u",
+			    TLMSP_container_length(container),
+			    TLMSP_container_context(container));
+			demo_conn_log_buf(3, conn, "Container data",
+			    TLMSP_container_get_data(container),
+			    TLMSP_container_length(container), true);
 			if (!container_queue_add(&conn->read_queue, container)) {
 				TLMSP_container_free(ssl, container);
 				result = -1;
@@ -547,12 +552,15 @@ read_containers(struct demo_connection *conn)
 			ssl_error = SSL_get_error(conn->ssl, ssl_result);
 			switch (ssl_error) {
 			case SSL_ERROR_WANT_HANDSHAKE:
+				demo_conn_log(5, conn, "SSL_ERROR_WANT_HANDSHAKE");
 				result = 1;
 				break;
 			case SSL_ERROR_WANT_READ:
+				demo_conn_log(5, conn, "SSL_ERROR_WANT_READ");
 				demo_connection_wait_for(conn, EV_READ);
 				break;
 			case SSL_ERROR_WANT_WRITE:
+				demo_conn_log(5, conn, "SSL_ERROR_WANT_WRITE");
 				demo_connection_wait_for(conn, EV_WRITE);
 				break;
 			default:
@@ -590,19 +598,30 @@ write_containers(struct demo_connection *conn)
 
 	result = 0;
 	while ((container = container_queue_head(&conn->write_queue)) != NULL) {
+		demo_conn_log(2, conn, "Sending container (length=%u) "
+		    "in context %u",
+		    TLMSP_container_length(container),
+		    TLMSP_container_context(container));
+		demo_conn_log_buf(3, conn, "Container data",
+		    TLMSP_container_get_data(container),
+		    TLMSP_container_length(container), true);
 		ssl_result = TLMSP_container_write(ssl, container);
 		if (ssl_result > 0) {
+			demo_conn_log(2, conn, "Container send complete (result = %d)", ssl_result);
 			container_queue_remove_head(&conn->write_queue);
 		} else {
 			ssl_error = SSL_get_error(ssl, ssl_result);
 			switch (ssl_error) {
 			case SSL_ERROR_WANT_HANDSHAKE:
+				demo_conn_log(5, conn, "SSL_ERROR_WANT_HANDSHAKE");
 				result = 1;
 				break;
 			case SSL_ERROR_WANT_READ:
+				demo_conn_log(5, conn, "SSL_ERROR_WANT_READ");
 				demo_connection_wait_for(conn, EV_READ);
 				break;
 			case SSL_ERROR_WANT_WRITE:
+				demo_conn_log(5, conn, "SSL_ERROR_WANT_WRITE");
 				demo_connection_wait_for(conn, EV_WRITE);
 				break;
 			default:

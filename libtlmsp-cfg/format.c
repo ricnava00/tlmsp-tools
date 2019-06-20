@@ -244,6 +244,7 @@ const struct value_type cfg_format =
                                        KEY("regex", STRING(ACTIVITY_MATCH_REGEX)))),
                            KEY("action", 
                                 OBJECT(ACTIVITY_ACTION,
+#if notyet
                                        KEY("fault",
                                             ENUM(ACTIVITY_ACTION_FAULT,
                                                  { "corrupt-data",   TLMSP_CFG_ACTION_FAULT_CORRUPT_DATA },
@@ -251,6 +252,7 @@ const struct value_type cfg_format =
                                                  { "corrupt-mac",    TLMSP_CFG_ACTION_FAULT_CORRUPT_MAC },
                                                  { "drop",           TLMSP_CFG_ACTION_FAULT_DROP },
                                                  { "reorder",        TLMSP_CFG_ACTION_FAULT_REORDER } )),
+#endif
                                        KEY("send-after",
                                             OBJECT(ACTIVITY_ACTION_SEND_AFTER,
                                                    KEY("context",
@@ -260,7 +262,9 @@ const struct value_type cfg_format =
                                                         STRING(ACTIVITY_ACTION_SEND_AFTER_CONTEXT_TAG)),
                                                    KEY("data", STRING(ACTIVITY_ACTION_SEND_AFTER_DATA)),
                                                    KEY("file", STRING(ACTIVITY_ACTION_SEND_AFTER_FILE)),
+#ifdef notyet
                                                    KEY("handler", STRING(ACTIVITY_ACTION_SEND_AFTER_HANDLER)),
+#endif
                                                    KEY("template", STRING(ACTIVITY_ACTION_SEND_AFTER_TEMPLATE)))),
                                        KEY("send-before",
                                             OBJECT(ACTIVITY_ACTION_SEND_BEFORE,
@@ -271,7 +275,9 @@ const struct value_type cfg_format =
                                                         STRING(ACTIVITY_ACTION_SEND_BEFORE_CONTEXT_TAG)),
                                                    KEY("data", STRING(ACTIVITY_ACTION_SEND_BEFORE_DATA)),
                                                    KEY("file", STRING(ACTIVITY_ACTION_SEND_BEFORE_FILE)),
+#ifdef notyet
                                                    KEY("handler", STRING(ACTIVITY_ACTION_SEND_BEFORE_HANDLER)),
+#endif
                                                    KEY("template", STRING(ACTIVITY_ACTION_SEND_BEFORE_TEMPLATE)))),
                                        KEY("send-replace",
                                             OBJECT(ACTIVITY_ACTION_SEND_REPLACE,
@@ -282,7 +288,9 @@ const struct value_type cfg_format =
                                                         STRING(ACTIVITY_ACTION_SEND_REPLACE_CONTEXT_TAG)),
                                                    KEY("data", STRING(ACTIVITY_ACTION_SEND_REPLACE_DATA)),
                                                    KEY("file", STRING(ACTIVITY_ACTION_SEND_REPLACE_FILE)),
+#ifdef notyet
                                                    KEY("handler", STRING(ACTIVITY_ACTION_SEND_REPLACE_HANDLER)),
+#endif
                                                    KEY("template", STRING(ACTIVITY_ACTION_SEND_REPLACE_TEMPLATE)))),
                                        KEY("reply",
                                             OBJECT(ACTIVITY_ACTION_REPLY,
@@ -293,7 +301,9 @@ const struct value_type cfg_format =
                                                         STRING(ACTIVITY_ACTION_REPLY_CONTEXT_TAG)),
                                                    KEY("data", STRING(ACTIVITY_ACTION_REPLY_DATA)),
                                                    KEY("file", STRING(ACTIVITY_ACTION_REPLY_FILE)),
+#ifdef notyet
                                                    KEY("handler", STRING(ACTIVITY_ACTION_REPLY_HANDLER)),
+#endif
                                                    KEY("template", STRING(ACTIVITY_ACTION_REPLY_TEMPLATE)))))))),
          KEY("client",
               OBJECT(CLIENT,

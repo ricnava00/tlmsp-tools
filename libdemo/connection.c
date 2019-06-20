@@ -16,6 +16,12 @@
 #include "splice.h"
 #include "print.h"
 
+
+/* XXX make configurable */
+#define READ_QUEUE_MAX_IDLE_MS		100
+#define READ_QUEUE_MAX_DEPTH_BYTES	(1*1024*1024)
+
+
 static void demo_conn_connected_cb(EV_P_ ev_io *w, int revents);
 
 
@@ -96,8 +102,14 @@ demo_connection_init_io(struct demo_connection *conn, SSL_CTX *ssl_ctx, int sock
 		return (false);
 	}
 
-	container_queue_init(&conn->read_queue, conn->ssl);
-	container_queue_init(&conn->write_queue, conn->ssl);
+	/*
+	 * Read queues on endpoints do not have an idle timer,
+	 * but middlebox read queues do.
+	 */
+	container_queue_init(&conn->read_queue, conn,
+	    (conn->splice == NULL) ? 0 : READ_QUEUE_MAX_IDLE_MS,
+	    READ_QUEUE_MAX_DEPTH_BYTES);
+	container_queue_init(&conn->write_queue, conn, 0, 0);
 
 	if (!demo_activity_conn_queue_initial(conn)) {
 		demo_conn_print_error(conn,
@@ -179,11 +191,11 @@ demo_connection_events_arrived(struct demo_connection *conn, int events)
 {
 
 	if (events & EV_ERROR)
-		demo_conn_log(3, conn, "ERROR event");
+		demo_conn_log(5, conn, "ERROR event");
 	if (events & EV_READ)
-		demo_conn_log(3, conn, "READ event");
+		demo_conn_log(5, conn, "READ event");
 	if (events & EV_WRITE)
-		demo_conn_log(3, conn, "WRITE event");
+		demo_conn_log(5, conn, "WRITE event");
 
 	conn->wait_events &= ~events;
 }
@@ -200,9 +212,9 @@ demo_connection_wait_for(struct demo_connection *conn, int events)
 {
 
 	if (events & EV_READ)
-		demo_conn_log(3, conn, "wait for readable");
+		demo_conn_log(5, conn, "Wait for readable");
 	if (events & EV_WRITE)
-		demo_conn_log(3, conn, "wait for writable");
+		demo_conn_log(5, conn, "Wait for writable");
 
 	conn->wait_events |= events;
 }

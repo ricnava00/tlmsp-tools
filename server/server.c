@@ -251,7 +251,7 @@ accept_cb(EV_P_ ev_io *w, int revents)
 	unsigned int i;
 
 	for (i = 0; i < server->accept_batch_limit; i++) {
-		sock = accept(server->listen_socket, NULL, NULL);
+		sock = accept4(server->listen_socket, NULL, NULL, SOCK_NONBLOCK);
 		if (sock == -1)
 			break;
 		
@@ -465,12 +465,6 @@ conn_cb(EV_P_ ev_io *w, int revents)
 			connection_died(conn);
 			return;
 		}
-		/*
-		 * As processing read data above may have added to an
-		 * otherwise empty write queue, ensure response to EV_WRITE.
-		 */
-		if (demo_connection_writes_pending(conn))
-			demo_connection_wait_for(conn, EV_WRITE);
 	}
 
 	/*
@@ -511,7 +505,7 @@ read_containers(struct demo_connection *conn)
 		if (ssl_result > 0) {
 			if (!TLMSP_get_last_read_context(ssl, &context_id))
 				return (false);
-			demo_conn_log(3, conn, "received container (length=%u) "
+			demo_conn_log(2, conn, "Received container (length=%u) "
 			    "in context %u using stream API", ssl_result,
 			    context_id);
 			if (!TLMSP_container_create(ssl, &container, context_id,
@@ -526,7 +520,7 @@ read_containers(struct demo_connection *conn)
 	} else {
 		ssl_result = TLMSP_container_read(ssl, &container);
 		if (ssl_result > 0) {
-			demo_conn_log(3, conn, "received container (length=%u) "
+			demo_conn_log(2, conn, "Received container (length=%u) "
 			    "in context %u using container API",
 			    TLMSP_container_length(container),
 			    TLMSP_container_context(container));
@@ -546,9 +540,11 @@ read_containers(struct demo_connection *conn)
 		ssl_error = SSL_get_error(ssl, ssl_result);
 		switch (ssl_error) {
 		case SSL_ERROR_WANT_READ:
+			demo_conn_log(5, conn, "SSL_ERROR_WANT_READ");
 			demo_connection_wait_for(conn, EV_READ);
 			break;
 		case SSL_ERROR_WANT_WRITE:
+			demo_conn_log(5, conn, "SSL_ERROR_WANT_WRITE");
 			demo_connection_wait_for(conn, EV_WRITE);
 			break;
 		default:
@@ -560,7 +556,7 @@ read_containers(struct demo_connection *conn)
 		return (result);
 	}
 
-	demo_conn_log_buf(4, conn, "Container data",
+	demo_conn_log_buf(3, conn, "Container data",
 	    TLMSP_container_get_data(container),
 	    TLMSP_container_length(container), true);
 	
@@ -568,6 +564,10 @@ read_containers(struct demo_connection *conn)
 		container = container_queue_remove_head(&conn->read_queue);
 		if (!container_queue_add(&conn->write_queue, container))
 			return (false);
+		demo_conn_log(2, conn, "Queued echoed container (length=%u) "
+		    "in context %u", TLMSP_container_length(container),
+		    TLMSP_container_context(container));
+		demo_connection_wait_for(conn, EV_WRITE);
 	} else if (!demo_activity_process_read_queue(conn))
 		return (false);
 	
@@ -594,11 +594,11 @@ write_containers(struct demo_connection *conn)
 	container = container_queue_head(&conn->write_queue);
 	while (container != NULL) {
 		context_id = TLMSP_container_context(container);
-		demo_conn_log(3, conn, "sending container (length=%u) "
+		demo_conn_log(2, conn, "Sending container (length=%u) "
 		    "in context %u using %s API",
 		    TLMSP_container_length(container), context_id,
 		    server->use_stream_api ? "stream" : "container");
-		demo_conn_log_buf(4, conn, "Container data",
+		demo_conn_log_buf(3, conn, "Container data",
 		    TLMSP_container_get_data(container),
 		    TLMSP_container_length(container), true);
 		if (server->use_stream_api) {
@@ -617,7 +617,7 @@ write_containers(struct demo_connection *conn)
 			ssl_result = TLMSP_container_write(ssl, container);
 		}
 		if (ssl_result > 0) {
-			demo_conn_log(3, conn, "container send complete");
+			demo_conn_log(2, conn, "Container send complete (result=%d)", ssl_result);
 			container_queue_remove_head(&conn->write_queue);
 			container = container_queue_head(&conn->write_queue);
 		} else
@@ -628,9 +628,11 @@ write_containers(struct demo_connection *conn)
 		ssl_error = SSL_get_error(ssl, ssl_result);
 		switch (ssl_error) {
 		case SSL_ERROR_WANT_READ:
+			demo_conn_log(5, conn, "SSL_ERROR_WANT_READ");
 			demo_connection_wait_for(conn, EV_READ);
 			break;
 		case SSL_ERROR_WANT_WRITE:
+			demo_conn_log(5, conn, "SSL_ERROR_WANT_WRITE");
 			demo_connection_wait_for(conn, EV_WRITE);
 			break;
 		default:

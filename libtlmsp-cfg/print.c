@@ -121,9 +121,11 @@ print_activity_action(int fd, unsigned int indent, const struct tlmsp_cfg_action
 {
 
 	indent_print(fd, indent,              "action {\n");
+#ifdef notyet
 	if (cfg->fault != TLMSP_CFG_ACTION_FAULT_NONE)
 		print_enum_key(fd, indent + 1,  "apply-fault",
 		    VALUE_TAG_ACTIVITY_ACTION_FAULT, cfg->fault);
+#endif
 	print_payload_key(fd, indent + 1,       "send-after", &cfg->after);
 	print_payload_key(fd, indent + 1,       "send-before", &cfg->before);
 	print_payload_key(fd, indent + 1,       "send-replace", &cfg->replace);

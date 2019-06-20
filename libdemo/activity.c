@@ -339,8 +339,8 @@ demo_activity_queue_payload(struct demo_connection *conn,
     struct tlmsp_cfg_payload *payload, struct match_groups *match_groups,
     bool create_if_empty)
 {
-
 	struct container_queue *q = &conn->write_queue;
+	SSL *ssl = q->conn->ssl;
 	TLMSP_Container *container;
 	const uint8_t *data;
 	size_t len;
@@ -368,7 +368,7 @@ demo_activity_queue_payload(struct demo_connection *conn,
 				container_len = MAX_CONTAINER_SIZE;
 			else
 				container_len = remaining;
-			if (!TLMSP_container_create(q->ssl, &container,
+			if (!TLMSP_container_create(ssl, &container,
 				payload->context->id, &data[offset],
 				container_len)) {
 				demo_conn_print_error_ssl_errq(conn,
@@ -379,10 +379,10 @@ demo_activity_queue_payload(struct demo_connection *conn,
 			if (!container_queue_add(q, container)) {
 				demo_conn_print_error(conn,
 				    "Failed to add payload container to queue\n");
-				TLMSP_container_free(q->ssl, container);
+				TLMSP_container_free(ssl, container);
 				goto out;
 			}
-			demo_conn_log(3, conn, "Queued container (length=%u) in "
+			demo_conn_log(2, conn, "Queued container (length=%u) in "
 			    "context %u", container_len, payload->context->id);
 
 			offset += container_len;
@@ -436,11 +436,11 @@ demo_activity_add_time_triggered_message(struct demo_connection *conn,
 		msg->free_data = free_data;
 
 		if (every == 0.0)
-			demo_conn_log(3, conn, "adding on-shot message at %u ms "
+			demo_conn_log(2, conn, "Adding on-shot message at %u ms "
 			    "(length=%u) in context %u", (unsigned int)(at * 1000.0),
 			    len, msg->context_id);
 		else
-			demo_conn_log(3, conn, "adding periodic message at %u ms, "
+			demo_conn_log(2, conn, "Adding periodic message at %u ms, "
 			    "period %u ms (length=%u) in context %u",
 			    (unsigned int)(((at == 0.0) ? every : at) * 1000.0),
 			    (unsigned int)(every * 1000.0), len, msg->context_id);
@@ -492,7 +492,7 @@ demo_activity_time_triggered_cb(EV_P_ ev_timer *w, int revents)
 			TLMSP_container_free(conn->ssl, container);
 			return;
 		}
-		demo_conn_log(3, conn, "Queued time-triggered container "
+		demo_conn_log(2, conn, "Queued time-triggered container "
 		    "(length=%u) in context %u", container_len, msg->context_id);
 
 		offset += container_len;
@@ -588,10 +588,6 @@ demo_activity_run_payload_handler(struct demo_connection *log_conn,
 		    "Failed to create pipe for handler stderr redirect");
 		goto stderr_fail;
 	}
-
-	printf("stdin READ(%u)=%d WRITE(%u)=%d\n", PIPE_READ_FD, stdin_pipe[PIPE_READ_FD], PIPE_WRITE_FD, stdin_pipe[PIPE_WRITE_FD]);
-	printf("stdout READ(%u)=%d WRITE(%u)=%d\n", PIPE_READ_FD, stdout_pipe[PIPE_READ_FD], PIPE_WRITE_FD, stdout_pipe[PIPE_WRITE_FD]);
-	printf("stderr READ(%u)=%d WRITE(%u)=%d\n", PIPE_READ_FD, stderr_pipe[PIPE_READ_FD], PIPE_WRITE_FD, stderr_pipe[PIPE_WRITE_FD]);
 
 	child_pid = fork();
 	if (0 == child_pid) {
@@ -718,8 +714,6 @@ demo_activity_handler_stdin_cb(EV_P_ ev_io *w, int revents)
 	bytes_written = write(w->fd, state->out_buf, state->out_remaining);
 	if (bytes_written == -1) {
 		demo_conn_log(5, state->log_conn, "stdin -1");
-			
-
 		if (errno != EAGAIN)
 			ev_break(EV_A_ EVBREAK_ONE);
 		return;
@@ -743,6 +737,7 @@ demo_activity_handler_stdout_cb(EV_P_ ev_io *w, int revents)
 	size_t space, new_size;
 	ssize_t bytes_read;
 	uint8_t *p;
+
 	demo_conn_log(5, state->log_conn, "Handler stdout event");
 	/*
 	 * If we have less than the realloc threshold, extend the buffer.
@@ -783,6 +778,7 @@ demo_activity_handler_stderr_cb(EV_P_ ev_io *w, int revents)
 	struct payload_handler_state *state = w->data;
 	ssize_t bytes_read;
 	size_t space;
+
 	demo_conn_log(5, state->log_conn, "Handler stderr event");
 	/* always leave one byte at the end for a NUL */
 	space = sizeof(state->err_buf) - state->err_offset - 1;
@@ -969,6 +965,23 @@ demo_activity_process_read_queue(struct demo_connection *conn)
 			return (false);
 	} while ((selected_match_state != NULL) && (conn->read_queue.head != NULL));
 
+	/*
+	 * We may have added data to the connection's write queue as a
+	 * result of the match-action activity processed above, so ensure
+	 * the write event is set.
+	 */
+	if (demo_connection_writes_pending(conn))
+		demo_connection_wait_for(conn, EV_WRITE);
+	/*
+	 * If this connection is part of a splice, the above match-action
+	 * activity may have queued new data to the other side's write
+	 * queue.
+	 */
+	if (conn->splice != NULL) {
+		if (demo_connection_writes_pending(conn->other_side))
+			demo_connection_wait_for(conn->other_side, EV_WRITE);
+	}
+	
 	return (true);
 }
 
@@ -1006,8 +1019,10 @@ demo_activity_container_match(struct demo_connection *conn,
 			    "(%"PRIu64" ?= %" PRIu64")", entry->container_number,
 			    match->container.param.n);
 
-			if (entry->container_number == match->container.param.n)
+			if (entry->container_number == match->container.param.n) {
+				demo_conn_log(4, conn, "Found container number match");
 				match_found = true;
+			}
 			break;
 		case TLMSP_CFG_MATCH_CONTAINER_PROBABILITY:
 			demo_conn_log(5, conn, "Checking container probability "
@@ -1015,11 +1030,13 @@ demo_activity_container_match(struct demo_connection *conn,
 			    match->container.param.p * match_state->containers_inspected);
 
 			if ((double)match_state->containers_matched <
-			    (match->container.param.p * match_state->containers_inspected))
+			    (match->container.param.p * match_state->containers_inspected)) {
+				demo_conn_log(4, conn, "Found container probability match");
 				match_found = true;
+			}
 			break;
 		case TLMSP_CFG_MATCH_CONTAINER_ALL:
-			demo_conn_log(5, conn, "Matching all containers");
+			demo_conn_log(4, conn, "Found all-containers match");
 			match_found = true;
 			break;
 		}
@@ -1129,6 +1146,7 @@ demo_activity_pattern_match(struct demo_connection *conn,
 		result = memmem(search_buf, search_len, pattern_buf->p,
 		    pattern_buf->len);
 		if (result != NULL) {
+			demo_conn_log(4, conn, "Found static pattern match");
 			match_found = true;
 			match_offset = result - search_buf;
 			match_len = pattern_buf->len;
@@ -1170,7 +1188,7 @@ demo_activity_pattern_match(struct demo_connection *conn,
 		num_match_groups = pcre2_match(match->pattern.param.regex,
 		    search_buf, search_len, 0, 0, match_data, NULL);
 		if (num_match_groups > 0) {
-			demo_conn_log(5, conn, "Match with %d groups",
+			demo_conn_log(4, conn, "Found regex match with %d groups",
 			    num_match_groups);
 			match_found = true;
 			output = pcre2_get_ovector_pointer(match_data);
@@ -1206,8 +1224,6 @@ demo_activity_pattern_match(struct demo_connection *conn,
 	}
 	
 	if (match_found) {
-		demo_conn_log(5, conn, "Match found (offset=%zu, length=%zu)",
-		    match_offset, match_len);
 		/*
 		 * Set up the match result range
 		 */
@@ -1222,7 +1238,7 @@ demo_activity_pattern_match(struct demo_connection *conn,
 			    ((match_offset + match_len) <= (offset + entry->length))) {
 				match_range->last = entry;
 				match_range->last_remainder =
-				    match_offset + match_len - offset;
+				    entry->length - (match_offset + match_len - offset);
 			}
 			offset += entry->length;
 		}
@@ -1415,6 +1431,7 @@ demo_activity_apply_match_delete_drop_or_forward(struct demo_connection *log_con
     struct container_queue_range *match_range, bool drop_all,
     bool delete_match)
 {
+	SSL *write_q_ssl = write_q->conn->ssl;
 	TLMSP_Container *container, *new_container;
 	const uint8_t *src;
 	size_t delete_or_forward_bytes;
@@ -1439,7 +1456,7 @@ demo_activity_apply_match_delete_drop_or_forward(struct demo_connection *log_con
 			    "(context=%u, length=%zu)",
 			    TLMSP_container_context(container),
 			    TLMSP_container_length(container));
-			if (!TLMSP_container_delete(write_q->ssl, container)) {
+			if (!TLMSP_container_delete(write_q_ssl, container)) {
 				demo_conn_print_error_ssl_errq(log_conn,
 				    "Failed to add delete preamble container");
 				return (false);
@@ -1465,7 +1482,7 @@ demo_activity_apply_match_delete_drop_or_forward(struct demo_connection *log_con
 			    "container (context=%u, length=%zu)",
 			    TLMSP_container_context(container),
 			    TLMSP_container_length(container));
-			TLMSP_container_free(write_q->ssl, container);
+			TLMSP_container_free(write_q_ssl, container);
 		} else {
 			/* deleting or forwarding */
 			if (delete_match) {
@@ -1473,7 +1490,7 @@ demo_activity_apply_match_delete_drop_or_forward(struct demo_connection *log_con
 				    "container (context=%u, length=%zu)",
 				    TLMSP_container_context(container),
 				    TLMSP_container_length(container));
-				if (!TLMSP_container_delete(write_q->ssl, container)) {
+				if (!TLMSP_container_delete(write_q_ssl, container)) {
 					demo_conn_print_error_ssl_errq(log_conn,
 					    "Failed to add delete preamble/match container");
 					return (false);
@@ -1484,6 +1501,10 @@ demo_activity_apply_match_delete_drop_or_forward(struct demo_connection *log_con
 				    "Failed to add preamble/match container to write queue");
 				return (false);
 			}
+			demo_conn_log(2, log_conn, "Queued forwarded premable/match "
+			    "container (length=%u) in context %u",
+			    TLMSP_container_length(container),
+			    TLMSP_container_context(container));
 		}
 		container = container_queue_head(read_q);
 	}
@@ -1499,7 +1520,7 @@ demo_activity_apply_match_delete_drop_or_forward(struct demo_connection *log_con
 		delete_or_forward_bytes = TLMSP_container_length(container) -
 		    match_range->last_remainder;
 		if (!drop_all && !delete_match) {
-			if (!TLMSP_container_create(write_q->ssl,
+			if (!TLMSP_container_create(write_q_ssl,
 				&new_container,
 				TLMSP_container_context(container),
 				TLMSP_container_get_data(container),
@@ -1515,6 +1536,10 @@ demo_activity_apply_match_delete_drop_or_forward(struct demo_connection *log_con
 				    "of match data to write queue");
 				return (false);
 			}
+			demo_conn_log(2, log_conn, "Queued partial match data "
+			    "container (length=%u) in context %u",
+			    TLMSP_container_length(new_container),
+			    TLMSP_container_context(new_container));
 		}
 		/* remove leading data on container staying in queue */
 		src = TLMSP_container_get_data(container); 
@@ -1526,14 +1551,14 @@ demo_activity_apply_match_delete_drop_or_forward(struct demo_connection *log_con
 			    "(context=%u, length=%zu)",
 			    TLMSP_container_context(container),
 			    TLMSP_container_length(container));
-			TLMSP_container_free(write_q->ssl, container);
+			TLMSP_container_free(write_q_ssl, container);
 		} else {
 			if (delete_match) {
 				demo_conn_log(5, log_conn, "Deleting final match container "
 				    "(context=%u, length=%zu)",
 				    TLMSP_container_context(container),
 				    TLMSP_container_length(container));
-				if (!TLMSP_container_delete(write_q->ssl, container)) {
+				if (!TLMSP_container_delete(write_q_ssl, container)) {
 					demo_conn_print_error_ssl_errq(log_conn,
 					    "Failed to delete complete container for "
 					    "tail end of match data");
@@ -1546,6 +1571,10 @@ demo_activity_apply_match_delete_drop_or_forward(struct demo_connection *log_con
 				    "match data to write queue");
 				return (false);
 			}
+			demo_conn_log(2, log_conn, "Queued forwarded final match data "
+			    "container (length=%u) in context %u",
+			    TLMSP_container_length(container),
+			    TLMSP_container_context(container));
 		}
 	}
 

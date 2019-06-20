@@ -17,15 +17,18 @@ local_install_dir=$1
 shift
 build_script_dir=$(pwd)
 tlmsp_tools_dir=$(pwd)/..
-openssl_dir=${build_script_dir}/../../openssl
+openssl_dir=${build_script_dir}/../../tlmsp-openssl
 
 if [ ! -f ${build_script_dir}/$(basename $0) ]; then
     echo "This script is intended to be run from the directory that contains it"
     exit 4
 fi
 if [ ! -d ${openssl_dir} ]; then
-    echo "The openssl source directory needs to be alongside the tlmsp-tools directory"
-    exit 5
+    openssl_dir=${build_script_dir}/../../openssl
+    if [ ! -d ${openssl_dir} ]; then
+	echo "The openssl source directory needs to be alongside the tlmsp-tools directory"
+	exit 5
+    fi
 fi
 if [ ! -f "${openssl_dir}/include/openssl/tlmsp.h" ]; then
     echo "The openssl source directory does include TLMSP support"

@@ -17,19 +17,17 @@ static void container_queue_idle_cb(EV_P_ ev_timer *w, int revents);
 
 void
 container_queue_init(struct container_queue *q, struct demo_connection *conn,
-    unsigned int max_idle, size_t max_depth)
+    unsigned int max_idle_ms, size_t max_length_bytes)
 {
 
 	q->conn = conn;
-	q->max_idle = max_idle;
-	q->max_depth = max_depth;
+	q->max_idle = max_idle_ms;
+	q->max_length = max_length_bytes;
 	q->head = NULL;
 	q->tail = NULL;
 	q->length = 0;
 	q->container_counter = 0;
 
-	/* XXX not yet */
-	q->max_idle = 0;
 	if (q->max_idle != 0) {
 		ev_init(&q->idle_timer, container_queue_idle_cb);
 		q->idle_timer.repeat = (double)q->max_idle / 1000.0;

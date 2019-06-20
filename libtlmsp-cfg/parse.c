@@ -1775,7 +1775,7 @@ find_first_match_reference(const uint8_t *buf, size_t len, size_t *ref_start,
 
 	for (i = 0; i < len; i++) {
 		if ((buf[i] == '$') &&       /* ref begins with $ */
-		    ((len - 1) >= 4) &&  /* must be at least 4 chars */
+		    (len  >= 4) &&           /* must be at least 4 chars */
 		    (buf[i + 1] == '{')) {   /* ref begins with ${ */
 			ref_end_found = false;
 			for (j = i + 2; j < len; j++) {

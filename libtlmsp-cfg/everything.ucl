@@ -98,9 +98,10 @@ activity {
         #
         #   template = <string>
         #   Send the data in the given string, which can contain
-        #   substitution variables $0..$n.  $0 refers to all of the
-        #   matched data.  In the case of a regex match, $1..$n refer
-        #   to the corresponding capture group in the match regex.
+        #   substitution variables ${0}..${n}.  ${0} refers to all of
+        #   the matched data.  In the case of a regex match,
+        #   ${1}..${n} refer to the corresponding capture group in the
+        #   match regex.
         # }
         # 
         send-after {

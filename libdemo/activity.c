@@ -899,6 +899,7 @@ demo_activity_process_read_queue(struct demo_connection *conn)
 {
 	struct demo_activity_match_state *match_state;
 	struct demo_activity_match_state *selected_match_state;
+	TLMSP_Container *container;
 	unsigned int i;
 	bool return_false;
 
@@ -965,6 +966,27 @@ demo_activity_process_read_queue(struct demo_connection *conn)
 			return (false);
 	} while ((selected_match_state != NULL) && (conn->read_queue.head != NULL));
 
+	/*
+	 * If the read queue has a size limit and we are over it, either
+	 * drop (endpoint) or forward (middlebox) containers until we are
+	 * back under the limit.
+	 */
+	if ((conn->read_queue.max_length != 0) &&
+	    (conn->read_queue.length > conn->read_queue.max_length)) {
+		demo_conn_log(2, conn, "Read queue is over limit with "
+		    "nothing matching, %s containers in queue until under limit.",
+		    (conn->splice != NULL) ? "forwarding" : "deleting");
+
+		while (conn->read_queue.length > conn->read_queue.max_length) {
+			container = container_queue_remove_head(&conn->read_queue);
+			if (conn->splice != NULL)
+				container_queue_add(&conn->other_side->write_queue,
+				    container);
+			else
+				TLMSP_container_free(conn->ssl, container);
+		}
+	}
+	
 	/*
 	 * We may have added data to the connection's write queue as a
 	 * result of the match-action activity processed above, so ensure

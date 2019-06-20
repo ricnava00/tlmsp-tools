@@ -1,0 +1,63 @@
+#
+# Simple ping pong arrangement bewteen a client and server with no
+# middleboxes
+#
+
+# One context
+context {
+    id = 1
+    tag = context-1
+}
+
+# Behavior definition that the client will use
+activity {
+    tag = send-ping
+
+    match {
+	at = 2000     # Start the action two seconds after connect
+        every = 3000  # Then repeat the action every 3 seconds
+    }
+
+    action {
+        #
+        # For time triggered behavior on an endpoint, send-before,
+        # send-replace, and send-after are equivalent.  Here,
+        # send-after is used.
+        #
+        send-after {
+            context = context-1    # Send in context-1
+            data = "client-ping"   # Send this data
+        }
+    }
+}
+
+# Behavior definition that the server will use
+activity {
+    tag = reply-pong
+
+    match {
+        which = *   # Which contexts to look for a match in.
+                    # Endpoints have access to all contexts, so no
+                    # need to be specific.
+        data = "ping"  # Look for this data
+    }
+
+    action {
+        send-replace {
+            context = context-1
+            data = "server-pong"
+        }
+    }
+}
+
+# Give the client an address and the send-ping behavior
+client {
+    address = tlmsp://localhost
+    function = send-ping
+}
+
+# Give the server an address and the reply-pong behavior
+server {
+    address = tlmsp://localhost:23812
+    function = reply-pong
+}

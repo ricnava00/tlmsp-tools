@@ -664,8 +664,6 @@ handle_value_tag_start_do(struct iteration_state *state, enum value_tag tag,
 		/* nothing to do */
 		break;
 	case VALUE_TAG_MIDDLEBOX:
-		if (!check_one_tag(state, tag, "middlebox", "config"))
-			return (false);
 		if (cfg->num_contexts == 0) {
 			ERRBUF("at least one context must be configured");
 			return (false);

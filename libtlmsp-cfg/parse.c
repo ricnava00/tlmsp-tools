@@ -48,6 +48,8 @@ struct auto_array_state {
 typedef bool context_id_array_t[TLMSP_CONTEXT_ID_MAX + 1]; 	
 /* direct-indexed by context ID */
 typedef struct tlmsp_cfg_context *context_ptr_array_t[TLMSP_CONTEXT_ID_MAX + 1];
+/* direct-indexed by context ID */
+typedef enum tlmsp_cfg_context_access context_access_array_t[TLMSP_CONTEXT_ID_MAX + 1]; 	
 
 /* for building a list of context pointers in a config object */
 struct context_list {
@@ -187,6 +189,9 @@ static bool percent_encoded_string_to_buf(const char *str, uint8_t **buf,
 static void initialize_cfg_middlebox(struct tlmsp_cfg_middlebox *cfg);
 static bool add_middlebox_context(struct iteration_state *state);
 static void initialize_cfg_middlebox_context(struct tlmsp_cfg_middlebox_context *cfg);
+static bool check_cfg_middlebox_activity_access(struct iteration_state *state,
+                                                struct tlmsp_cfg_middlebox *cfg,
+                                                struct tlmsp_cfg_activity *activity);
 static void copy_cfg_middlebox_context(struct tlmsp_cfg_middlebox_context *dest,
                                        struct tlmsp_cfg_middlebox_context *src);
 static bool add_context_ptr_to_array(struct auto_array_state *s,
@@ -1159,7 +1164,7 @@ handle_value_tag_finish(struct iteration_state *state, enum value_tag tag,
 			    state->cur_middlebox->tag);
 			state->cur_middlebox->cert_key_file = strdup(state->tmpbuf);
 		}
-
+		state->cur_middlebox = NULL;
 		break;
 	case VALUE_TAG_MIDDLEBOX_TAG:
 		for (i = 0; i < cfg->num_middleboxes; i++)
@@ -1282,15 +1287,31 @@ handle_value_tag_finish(struct iteration_state *state, enum value_tag tag,
 		state->cur_middlebox_context->access = value->type_enum.e;
 		break;
 	case VALUE_TAG_MIDDLEBOX_FUNCTION_TO_CLIENT:
+	{
+		struct tlmsp_cfg_middlebox *mb;
+
+		mb = state->cur_middlebox;
 		if (!add_tag_to_activity_list(&state->activity_list_to_client,
 			value->type_string))
 			return (false);
+		if (!check_cfg_middlebox_activity_access(state, mb,
+			mb->activities_to_client[mb->num_activities_to_client - 1]))
+			return (false);
 		break;
+	}
 	case VALUE_TAG_MIDDLEBOX_FUNCTION_TO_SERVER:
+	{
+		struct tlmsp_cfg_middlebox *mb;
+
+		mb = state->cur_middlebox;
 		if (!add_tag_to_activity_list(&state->activity_list_to_server,
 			value->type_string))
 			return (false);
+		if (!check_cfg_middlebox_activity_access(state, mb,
+			mb->activities_to_server[mb->num_activities_to_server - 1]))
+			return (false);
 		break;
+	}
 	case NUM_VALUE_TAGS:
 		/* should never happen */
 		ERRBUF("internal error");
@@ -1890,6 +1911,88 @@ initialize_cfg_middlebox(struct tlmsp_cfg_middlebox *cfg)
 	 * cfg->num_faults = 0;
 	 * cfg->faults = NULL;
 	 */
+}
+
+static bool
+check_cfg_middlebox_activity_access(struct iteration_state *state,
+    struct tlmsp_cfg_middlebox *cfg, struct tlmsp_cfg_activity *activity)
+{
+	struct tlmsp_cfg_context *context;
+	context_access_array_t context_access;
+	unsigned int i;
+
+	memset(context_access, 0, sizeof(context_access));
+	for (i = 0; i < cfg->num_contexts; i++)
+		context_access[cfg->contexts[i].base->id] = cfg->contexts[i].access;
+
+	/*
+	 * Check that middlebox has read access to all match contexts
+	 */
+	for (i = 0; i < activity->match.num_contexts; i++) {
+		context = activity->match.contexts[i];
+		if (context_access[context->id] == TLMSP_CFG_CTX_ACCESS_NONE) {
+			if (context->tag[0] != '\0')
+				ERRBUF("middlebox %s activity %s requires read "
+				    "access to context %s", cfg->tag, activity->tag, context->tag);
+			else
+				ERRBUF("middlebox %s activity %s requires read "
+				    "access to context %u", cfg->tag, activity->tag, context->id);			
+			return (false);
+		}
+	}
+
+	/*
+	 * Check that middlebox has write access to all action contexts
+	 */
+	context = activity->action.after.context;
+	if ((context != NULL) &&
+	    (context_access[context->id] != TLMSP_CFG_CTX_ACCESS_RW)) {
+		if (context->tag[0] != '\0')
+			ERRBUF("middlebox %s activity %s send-after requires write "
+			    "access to context %s", cfg->tag, activity->tag, context->tag);
+		else
+			ERRBUF("middlebox %s activity %s send-after requires write "
+			    "access to context %u", cfg->tag, activity->tag, context->id);
+		return (false);
+	}
+
+	context = activity->action.before.context;
+	if ((context != NULL) &&
+	    (context_access[context->id] != TLMSP_CFG_CTX_ACCESS_RW)) {
+		if (context->tag[0] != '\0')
+			ERRBUF("middlebox %s activity %s send-before requires write "
+			    "access to context %s", cfg->tag, activity->tag, context->tag);
+		else
+			ERRBUF("middlebox %s activity %s send-before requires write "
+			    "access to context %u", cfg->tag, activity->tag, context->id);			
+		return (false);
+	}
+
+	context = activity->action.replace.context;
+	if ((context != NULL) &&
+	    (context_access[context->id] != TLMSP_CFG_CTX_ACCESS_RW)) {
+		if (context->tag[0] != '\0')
+			ERRBUF("middlebox %s activity %s send-replace requires write "
+			    "access to context %s", cfg->tag, activity->tag, context->tag);
+		else
+			ERRBUF("middlebox %s activity %s send-replace requires write "
+			    "access to context %u", cfg->tag, activity->tag, context->id);			
+		return (false);
+	}
+
+	context = activity->action.reply.context;
+	if ((context != NULL) &&
+	    (context_access[context->id] != TLMSP_CFG_CTX_ACCESS_RW)) {
+		if (context->tag[0] != '\0')
+			ERRBUF("middlebox %s activity %s reply requires write "
+			    "access to context %s", cfg->tag, activity->tag, context->tag);
+		else
+			ERRBUF("middlebox %s activity %s reply requires write "
+			    "access to context %u", cfg->tag, activity->tag, context->id);			
+		return (false);
+	}
+
+	return (true);
 }
 
 static bool

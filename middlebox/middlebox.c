@@ -540,9 +540,12 @@ read_containers(struct demo_connection *conn)
 			    "in context %u",
 			    TLMSP_container_length(container),
 			    TLMSP_container_context(container));
-			demo_conn_log_buf(3, conn, "Container data",
-			    TLMSP_container_get_data(container),
-			    TLMSP_container_length(container), true);
+			if (TLMSP_container_readable(container))
+				demo_conn_log_buf(3, conn, "Container data",
+				    TLMSP_container_get_data(container),
+				    TLMSP_container_length(container), true);
+			else
+				demo_conn_log(3, conn, "Container is opaque");
 			if (!container_queue_add(&conn->read_queue, container)) {
 				TLMSP_container_free(ssl, container);
 				result = -1;
@@ -602,9 +605,14 @@ write_containers(struct demo_connection *conn)
 		    "in context %u",
 		    TLMSP_container_length(container),
 		    TLMSP_container_context(container));
-		demo_conn_log_buf(3, conn, "Container data",
-		    TLMSP_container_get_data(container),
-		    TLMSP_container_length(container), true);
+		if (TLMSP_container_readable(container))
+			demo_conn_log_buf(3, conn, "Container data",
+			    TLMSP_container_get_data(container),
+			    TLMSP_container_length(container), true);
+		else
+			demo_conn_log(3, conn, "Container %s",
+			    TLMSP_container_deleted(container) ?
+			    "marked deleted" : "is opaque");
 		ssl_result = TLMSP_container_write(ssl, container);
 		if (ssl_result > 0) {
 			demo_conn_log(2, conn, "Container send complete (result = %d)", ssl_result);

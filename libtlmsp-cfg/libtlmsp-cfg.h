@@ -151,7 +151,7 @@ struct tlmsp_cfg_context {
 
 struct tlmsp_cfg_middlebox_context {
 	struct tlmsp_cfg_context *base;
-	enum {
+	enum tlmsp_cfg_context_access {
 		TLMSP_CFG_CTX_ACCESS_NONE,
 		TLMSP_CFG_CTX_ACCESS_R,
 		TLMSP_CFG_CTX_ACCESS_RW

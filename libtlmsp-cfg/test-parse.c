@@ -14,7 +14,7 @@ int
 main(int argc, char **argv)
 {
 	const struct tlmsp_cfg *cfg;
-	char errbuf[80];
+	char errbuf[160];
 
 	if (argc < 2) {
 		printf("No filename given\n");

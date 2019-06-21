@@ -148,10 +148,14 @@ tlmsp_cfg_middlebox_contexts_to_openssl(const struct tlmsp_cfg_middlebox *mb)
 	for (i = 0; i < mb->num_contexts; i++) {
 		mb_context = &mb->contexts[i];
 
-		if (mb_context->access == TLMSP_CFG_CTX_ACCESS_RW)
+		if(mb_context->access == TLMSP_CFG_CTX_ACCESS_NONE)
+			continue;
+
+		if (mb_context->access == TLMSP_CFG_CTX_ACCESS_RW) {
 			auth = TLMSP_CONTEXT_AUTH_WRITE;
-		else
+		} else {
 			auth = TLMSP_CONTEXT_AUTH_READ;
+		}
 		if (!TLMSP_context_access_add(&tlmsp_contexts_access,
 			mb_context->base->id, auth)) {
 			TLMSP_context_access_free(tlmsp_contexts_access);

@@ -751,6 +751,7 @@ demo_activity_handler_stdout_cb(EV_P_ ev_io *w, int revents)
 			ev_break(EV_A_ EVBREAK_ONE);
 			return;
 		}
+		state->in_buf = p;
 		state->in_size = new_size;
 		space = state->in_size - state->in_offset;
 	}

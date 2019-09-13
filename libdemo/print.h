@@ -36,11 +36,14 @@ void demo_conn_log(unsigned int level, struct demo_connection *conn,
 void demo_log_sockaddr(unsigned int level, const char *msg, struct sockaddr *sa);
 void demo_conn_log_sockaddr(unsigned int level, struct demo_connection *conn,
                             const char *msg, struct sockaddr *sa);
-void demo_log_buf(unsigned int level, const char *msg, const uint8_t *buf,
-                  size_t len, bool limit);
+void demo_log_buf(unsigned int level, const uint8_t *buf, size_t len,
+                  bool limit, const char *fmt, ...);
 void demo_conn_log_buf(unsigned int level, struct demo_connection *conn,
-                       const char *msg, const uint8_t *buf, size_t len,
-                       bool limit);
+                       const uint8_t *buf, size_t len, bool limit,
+                       const char *fmt, ...);
+void demo_conn_present(struct demo_connection *conn, const char *fmt, ...);
+void demo_conn_present_buf(struct demo_connection *conn, const uint8_t *buf,
+    size_t len, bool limit, const char *fmt, ...);
 
 extern int demo_error_fd;
 extern pid_t demo_pid;

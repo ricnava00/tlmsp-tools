@@ -40,11 +40,13 @@
 
 
 enum {
-	OPT_CONFIG_FILE = 'c',
-	OPT_ERROR_FILE  = 'e',
-	OPT_HELP        = 'h',
-	OPT_STREAM_API  = 's',
-	OPT_VERBOSE     = 'v'
+	OPT_CONFIG_FILE    = 'c',
+	OPT_ERROR_FILE     = 'e',
+	OPT_HELP           = 'h',
+	OPT_PRESENTATION   = 'P',
+	OPT_PORT_SHIFT     = 'p',
+	OPT_STREAM_API     = 's',
+	OPT_VERBOSE        = 'v'
 };
 
 
@@ -52,13 +54,14 @@ static void usage(bool is_error);
 static void show_client_info_cb(void *app_data);
 static struct client_state *new_client(struct ev_loop *loop,
                                        const char *cfg_file,
-                                       bool use_stream_api);
+                                       bool use_stream_api,
+                                       bool force_presentation,
+                                       int port_shift);
 static void free_client_cb(void *app_data);
 static bool new_connection(struct client_state *client,
 	                   const TLMSP_ReconnectState *reconnect_state);
 static void show_connection_info(void *app_data);
-static int validate_discovery_results(SSL *ssl, int unused,
-                                      TLMSP_Middleboxes *middleboxes, void *arg);
+static int validate_discovery_results(SSL *ssl, void *arg);
 static void free_connection_cb(void *app_data);
 static void connection_died(struct demo_connection *conn);
 static void conn_cb(EV_P_ ev_io *w, int revents);
@@ -68,11 +71,13 @@ static bool write_containers(struct demo_connection *conn);
 
 static struct option options[] =
 {
-	{"config",     required_argument, 0, OPT_CONFIG_FILE},
-	{"help",       no_argument,       0, OPT_HELP},
-	{"errors",     required_argument, 0, OPT_ERROR_FILE},
-	{"stream-api", no_argument,       0, OPT_STREAM_API},
-	{"verbose",    no_argument,       0, OPT_VERBOSE},
+	{"config",         required_argument, 0, OPT_CONFIG_FILE},
+	{"errors",         required_argument, 0, OPT_ERROR_FILE},
+	{"help",           no_argument,       0, OPT_HELP},
+	{"port-shift",     required_argument, 0, OPT_PORT_SHIFT},
+	{"presentation",   no_argument,       0, OPT_PRESENTATION},
+	{"stream-api",     no_argument,       0, OPT_STREAM_API},
+	{"verbose",        no_argument,       0, OPT_VERBOSE},
 	{NULL, 0, NULL, 0}
 };
 
@@ -91,6 +96,8 @@ usage(bool is_error)
 	dprintf(fd, "  -e <file>, --errors <file>  Send error messages to file (- means stdout). List\n");
 	dprintf(fd, "                              first to redirect all errors [default: stderr]\n");
 	dprintf(fd, "  -h, --help                  Print this message\n");
+	dprintf(fd, "  -P, --presentation          Force presentation of activities\n");
+	dprintf(fd, "  -p, --port-shift <delta>    Shift all port numbers in configuration by this amount [default: 0]\n");
 	dprintf(fd, "  -s, --stream-api            Use stream read/write API [default: container API]\n");
 	dprintf(fd, "  -v, --verbose               Raise verbosity level by one [default: 0]\n");
 	dprintf(fd, "\n");
@@ -107,18 +114,15 @@ show_client_info_cb(void *app_data)
 }
 
 static struct client_state *
-new_client(struct ev_loop *loop, const char *cfg_file, bool use_stream_api)
+new_client(struct ev_loop *loop, const char *cfg_file, bool use_stream_api,
+    bool force_presentation, int port_shift)
 {
 	struct client_state *client;
 	struct demo_app *app;
 	const struct tlmsp_cfg_client *cfg;
 	TLMSP_Contexts *tlmsp_contexts = NULL;
-	TLMSP_ContextAccess *contexts_access = NULL;
 	TLMSP_Middleboxes *tlmsp_middleboxes = NULL;
-	struct tlmsp_cfg_middlebox *cfg_middlebox;
-	struct tlmsp_middlebox_configuration tmc;
 	int address_type;
-	unsigned int i;
 
 	client = calloc(1, sizeof(*client));
 	if (client == NULL) {
@@ -127,7 +131,7 @@ new_client(struct ev_loop *loop, const char *cfg_file, bool use_stream_api)
 	}
 
 	app = demo_app_create(false, free_client_cb, show_client_info_cb,
-	    client, 0, cfg_file);
+	    client, 0, cfg_file, force_presentation);
 	if (app == NULL) {
 		free(client);
 		return (NULL);
@@ -138,6 +142,7 @@ new_client(struct ev_loop *loop, const char *cfg_file, bool use_stream_api)
 	cfg = client->cfg;
 	demo_log_msg(1, "Creating client '%s'", cfg->address);
 	client->loop = loop;
+	client->port_shift = port_shift;
 	client->use_stream_api = use_stream_api;
 
 	client->ssl_ctx = SSL_CTX_new(TLMSP_client_method());
@@ -194,64 +199,16 @@ new_client(struct ev_loop *loop, const char *cfg_file, bool use_stream_api)
 	/*
 	 * Configure initial middlebox list
 	 */
-	for (i = 0; i < app->cfg->num_middleboxes; i++) {
-		cfg_middlebox = &app->cfg->middleboxes[i];
-
-		if (cfg_middlebox->discovered)
-			continue;
-
-		/*
-		 * Build context access list
-		 */
-		if (cfg_middlebox->num_contexts > 0) {
-			contexts_access =
-			    tlmsp_cfg_middlebox_contexts_to_openssl(cfg_middlebox);
-			if (contexts_access == NULL) {
-				demo_print_error("Failed to build contexts "
-				    "access for middlebox '%s'",
-				    cfg_middlebox->tag);
-				goto error;
-			}
-		} else
-			contexts_access = NULL;
-
-		address_type = tlmsp_util_address_type(cfg_middlebox->address);
-		if (address_type == TLMSP_UTIL_ADDRESS_UNKNOWN) {
-			demo_print_error("Failed to determine address type for "
-			    "middlebox '%s' (address '%s')",
-			    cfg_middlebox->tag, cfg_middlebox->address);
-			goto error;
-		}
-		
-		tmc.address_type = address_type;
-		tmc.address = cfg_middlebox->address;
-		tmc.transparent = cfg_middlebox->transparent;
-		tmc.contexts = contexts_access;
-		tmc.ca_file_or_dir = NULL;
-		if (!TLMSP_middlebox_add(&tlmsp_middleboxes, &tmc)) {
-			demo_print_error_ssl_errq("Failed to add middlebox '%s'",
-			    cfg_middlebox->tag);
-			goto error;
-		}
-		TLMSP_context_access_free(contexts_access);
-		contexts_access = NULL;
-	}
-	if (tlmsp_middleboxes != NULL)
+	tlmsp_middleboxes = tlmsp_cfg_initial_middlebox_list_to_openssl(app->cfg);
+	if (tlmsp_middleboxes != NULL) {
 		if (!TLMSP_set_initial_middleboxes(client->ssl_ctx,
 			tlmsp_middleboxes)) {
 			demo_print_error_ssl_errq("Failed to set middlebox list");
 			goto error;
 		}
-	TLMSP_middleboxes_free(tlmsp_middleboxes);
+		TLMSP_middleboxes_free(tlmsp_middleboxes);
+	}
 
-	/*
-	 * The validation we do just ensures that all list members are in
-	 * the demo config file, so we can set the callback at the SSL_CTX
-	 * level.
-	 */
-	TLMSP_set_discovery_cb(client->ssl_ctx, validate_discovery_results,
-	    client);
-	
 	if (!new_connection(client, NULL)) {
 		demo_print_error("Failed to create connection");
 		goto error;
@@ -260,8 +217,8 @@ new_client(struct ev_loop *loop, const char *cfg_file, bool use_stream_api)
 	return (client);
 
 error:
-	TLMSP_context_access_free(contexts_access);
 	TLMSP_contexts_free(tlmsp_contexts);
+	TLMSP_middleboxes_free(tlmsp_middleboxes);
 	demo_app_free(client->app);
 	return (NULL);
 }
@@ -285,9 +242,10 @@ new_connection(struct client_state *client,
 	struct demo_connection *conn;
 	struct sockaddr *addr;
 	socklen_t addr_len;
-	uint8_t *next_hop_addr = NULL;
-	size_t next_hop_addr_len;
-	int next_hop_addr_type;
+	uint8_t *first_hop_addr = NULL;
+	char *first_hop_addr_str;
+	size_t first_hop_addr_len;
+	int first_hop_addr_type;
 	int sock;
 	
 	conn_state = calloc(1, sizeof(*conn_state));
@@ -318,21 +276,70 @@ new_connection(struct client_state *client,
 		goto error;
 	}
 	
-	if (!TLMSP_get_next_hop_address(client->ssl_ctx, &next_hop_addr_type,
-		&next_hop_addr, &next_hop_addr_len)) {
-		demo_print_error_ssl_errq("Failed to get next hop address");
-		goto error;
+	if (reconnect_state == NULL) {
+		/*
+		 * First round TLMSP connection attempt.  Normally, a client
+		 * would call TLMSP_get_first_hop_address() to determine the
+		 * address to connect the transport to based on the
+		 * SSL_CTX's configured middlebox list and server.  In order
+		 * to support emulated transparency, we determine the first
+		 * hop address using the configuration file, as the first
+		 * hop may be a transparent middlebox that is to be
+		 * discovered and is thus not in the SSL_CTX's configured
+		 * middlebox list.
+		 */
+		first_hop_addr_str = tlmsp_cfg_get_client_first_hop_address(
+		    client->app->cfg, false, true, &first_hop_addr_type);
+		if (first_hop_addr_str == NULL) {
+			demo_print_error("Could not determine first hop address");
+			goto error;
+		}
+		first_hop_addr_len = strlen(first_hop_addr_str);
+		/*
+		 * Align allocator with the other branch so common code can
+		 * be used from this point on.
+		 */
+		first_hop_addr = OPENSSL_memdup(first_hop_addr_str,
+		    first_hop_addr_len);
+		free(first_hop_addr_str);
+		if (first_hop_addr == NULL) {
+			demo_print_error("Failed to change first hop address "
+			    "allocator");
+			goto error;
+		}
+	} else {
+		/*
+		 * Second round (post-discovery with changed first hop)
+		 * TLMSP connection attempt.  Normally, a client would call
+		 * TLMSP_get_first_hop_address_reconnect() to determine the
+		 * address to connect the transport to based on the
+		 * middlebox list contained in the reconnect state.  Here,
+		 * we call TLMSP_get_first_hop_address_reconnect_ex() in
+		 * order to support emulated transparency, under which the
+		 * first hop may be a discovered transparent middlebox which
+		 * normally would not be considered the first hop to connect
+		 * to.
+		 */
+		if (!TLMSP_get_first_hop_address_reconnect_ex(reconnect_state,
+			&first_hop_addr_type, &first_hop_addr,
+			&first_hop_addr_len, 1)) {
+			demo_print_error_ssl_errq(
+			    "Failed to get first hop address");
+			goto error;
+		}
 	}
-	addr = tlmsp_util_address_to_sockaddr(next_hop_addr_type,
-	    next_hop_addr, next_hop_addr_len, &addr_len, client->app->errbuf,
-	    sizeof(client->app->errbuf));
+	addr = tlmsp_util_address_to_sockaddr(first_hop_addr_type,
+	    first_hop_addr, first_hop_addr_len, &addr_len, client->port_shift,
+	    client->app->errbuf, sizeof(client->app->errbuf));
 	if (addr == NULL) {
 		demo_print_error("Could not convert next hop address '%.*s' to "
-		    "sockaddr: %s", next_hop_addr_len, next_hop_addr,
+		    "sockaddr: %s", first_hop_addr_len, first_hop_addr,
 		    client->app->errbuf);
 		goto error;
 	}
-	OPENSSL_free(next_hop_addr);
+	demo_conn_log_sockaddr(1, conn, "First hop address is ", addr);
+	OPENSSL_free(first_hop_addr);
+
 	sock = socket(addr->sa_family, SOCK_STREAM | SOCK_NONBLOCK, 0);
 	if (sock == -1) {
 		demo_print_errno("Socket creation failed");
@@ -350,6 +357,10 @@ new_connection(struct client_state *client,
 		goto error;
 
 	SSL_set_connect_state(conn->ssl);
+
+	TLMSP_set_discovery_cb_instance(conn->ssl, validate_discovery_results,
+	    conn);
+
 	if (reconnect_state != NULL) {
 		if (!TLMSP_set_reconnect_state(conn->ssl, reconnect_state)) {
 			demo_print_error_ssl_errq("Failed to set reconnect state");
@@ -357,12 +368,13 @@ new_connection(struct client_state *client,
 		}
 		TLMSP_reconnect_state_free(reconnect_state);
 	}
+
 	demo_connection_start_io(conn);
 
 	return (true);
 
 error:
-	OPENSSL_free(next_hop_addr);
+	OPENSSL_free(first_hop_addr);
 	demo_connection_free(conn);
 	return (false);
 }
@@ -381,56 +393,25 @@ free_connection_cb(void *app_data)
 {
 	struct connection_state *conn_state = app_data;
 
+	TLMSP_reconnect_state_free(conn_state->reconnect_state);
 	free(conn_state);
 }
 
 static int
-validate_discovery_results(SSL *ssl, int unused, TLMSP_Middleboxes *middleboxes,
-    void *arg)
+validate_discovery_results(SSL *ssl, void *arg)
 {
-	struct client_state *client = arg;
-	TLMSP_Middlebox *mb;
-	const struct tlmsp_cfg_middlebox *cfg_mb;
-	const TLMSP_ContextAccess *contexts;
-	uint8_t *address;
-	size_t address_len;
-	char *address_string;
-	int address_type;
+	struct demo_connection *conn = arg;
+	const struct tlmsp_cfg *cfg = conn->app->cfg;
+	TLMSP_Middleboxes *middleboxes;
+	int result;
 
-	/*
-	 * For each entry in the middlebox list, look up the middlebox
-	 * config if found, validate the access list
-	 */
-	mb = TLMSP_middleboxes_first(middleboxes);
-	while (mb != NULL) {
-		if (!TLMSP_get_middlebox_address(mb, &address_type, &address, &address_len))
-			return (0);
-		address_string = malloc(address_len + 1);
-		if (address_string == NULL) {
-			OPENSSL_free(address);
-			return (0);
-		}
-		memcpy(address_string, address, address_len);
-		OPENSSL_free(address);
-		address_string[address_len] = '\0';
-
-		cfg_mb = tlmsp_cfg_get_middlebox_by_address(client->app->cfg, address_string);
-		if (cfg_mb == NULL) {
-			free(address_string);
-			return (0);
-		}
-		free(address_string);
-
-		contexts = TLMSP_middlebox_context_access(mb);
-		if (!tlmsp_cfg_middlebox_contexts_match_openssl(cfg_mb,
-			contexts)) {
-			return (0);
-		}
-
-		mb = TLMSP_middleboxes_next(middleboxes, mb);
-	}
-
-	return (1);
+	middleboxes = TLMSP_get_middleboxes_instance(conn->ssl);
+	if (middleboxes == NULL)
+		return (0);
+	result = tlmsp_cfg_validate_middlebox_list_client_openssl(cfg,
+		middleboxes);
+	TLMSP_middleboxes_free(middleboxes);
+	return (result);
 }
 
 static void
@@ -462,7 +443,7 @@ conn_cb(EV_P_ ev_io *w, int revents)
 	struct demo_connection *conn = w->data;
 	bool pending_writes;
 
-	demo_connection_stop_io(conn);
+	demo_connection_pause_io(conn);
 	demo_connection_events_arrived(conn, revents);
 
 	/*
@@ -595,9 +576,8 @@ read_containers(struct demo_connection *conn)
 		return (result);
 	}
 
-	demo_conn_log_buf(3, conn, "Container data",
-	    TLMSP_container_get_data(container),
-	    TLMSP_container_length(container), true);
+	demo_conn_log_buf(3, conn, TLMSP_container_get_data(container),
+	    TLMSP_container_length(container), true, "Container data");
 
 	if (!demo_activity_process_read_queue(conn))
 		return (false);
@@ -629,9 +609,8 @@ write_containers(struct demo_connection *conn)
 		    "in context %u using %s API",
 		    TLMSP_container_length(container), context_id,
 		    client->use_stream_api ? "stream" : "container");
-		demo_conn_log_buf(3, conn, "Container data",
-		    TLMSP_container_get_data(container),
-		    TLMSP_container_length(container), true);
+		demo_conn_log_buf(3, conn, TLMSP_container_get_data(container),
+		    TLMSP_container_length(container), true, "Container data");
 		if (client->use_stream_api) {
 			if (!TLMSP_set_current_context(ssl, context_id)) {
 				demo_conn_print_error(conn,
@@ -688,6 +667,8 @@ int main(int argc, char **argv)
 	int opt_index;
 	int opt_code;
 	const char *cfg_file;
+	int port_shift;
+	bool force_presentation;
 	bool has_config;
 	bool use_stream_api;
 	struct ev_loop *loop;
@@ -701,12 +682,14 @@ int main(int argc, char **argv)
 	demo_pid = getpid();
 	demo_signal_handling_init();
 
+	port_shift = 0;
+	force_presentation = false;
 	has_config = false;
 	use_stream_api = false;
 	opterr = 0; /* prevent getopt from printing its own error messages */
 	for (;;) {
 		opt_index = 0;
-		opt_code = getopt_long(argc, argv, ":c:e:hsv", options,
+		opt_code = getopt_long(argc, argv, ":c:e:hPp:sv", options,
 		    &opt_index);
 
 		if (opt_code == -1)
@@ -731,6 +714,12 @@ int main(int argc, char **argv)
 				}
 			}
 			break;
+		case OPT_PORT_SHIFT:
+			port_shift = strtol(optarg, NULL, 10);
+			break;
+		case OPT_PRESENTATION:
+			force_presentation = true;
+			break;
 		case OPT_STREAM_API:
 			use_stream_api = true;
 			break;
@@ -745,7 +734,7 @@ int main(int argc, char **argv)
 			    argv[optind - 1]);
 			usage(true);
 		case '?':
-			demo_print_error("Unknown option %s", argv[optind]);
+			demo_print_error("Unknown option %s", argv[optind - 1]);
 			usage(true);
 			break;
 		default:
@@ -767,7 +756,8 @@ int main(int argc, char **argv)
 	
 	loop = ev_default_loop(EVFLAG_AUTO);
 
-	single_client = new_client(loop, cfg_file, use_stream_api);
+	single_client = new_client(loop, cfg_file, use_stream_api,
+	    force_presentation, port_shift);
 	if (single_client == NULL)
 	{
 		demo_print_error("Failed to create new client");

@@ -30,6 +30,7 @@ struct splice_state;
 struct connection_state {
 	struct splice_state *splice;
 	struct context_state *context[CONTEXT_ID_LUT_SIZE];
+	bool is_dead;
 };
 
 struct middlebox_state;
@@ -39,6 +40,7 @@ struct splice_state {
 	struct demo_splice *splice;
 	struct connection_state *to_client;
 	struct connection_state *to_server;
+	const TLMSP_ReconnectState *reconnect_state;
 
 	int next_hop_addr_type;
 	uint8_t *next_hop_addr;
@@ -75,6 +77,7 @@ struct middlebox_state {
 	socklen_t next_addr_len;	/* only used if next_is_transparent */
 	int listen_socket;
 	ev_io listen_watcher;
+	int port_shift;
 	uint64_t splice_counter;
 };
 

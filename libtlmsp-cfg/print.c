@@ -30,8 +30,8 @@ static void print_activity_match(int fd, unsigned int indent,
                                      const struct tlmsp_cfg_match *cfg);
 static void print_activity_action(int fd, unsigned int indent,
                                       const struct tlmsp_cfg_action *cfg);
-static void print_payload_key(int fd, unsigned int indent, const char *key,
-                              const struct tlmsp_cfg_payload *cfg);
+static void print_payload(int fd, unsigned int indent,
+                          const struct tlmsp_cfg_payload *cfg);
 static void print_middlebox_context(int fd, unsigned int indent,
                                     const struct tlmsp_cfg_middlebox_context *cfg);
 static void print_boolean(int fd, bool value);
@@ -67,10 +67,14 @@ static void print_template_key(int fd, unsigned int indent, const char *key,
 void
 print_activity(int fd, unsigned int indent, const struct tlmsp_cfg_activity *cfg)
 {
+	unsigned int i;
+
 	indent_print(fd, indent,                   "activity {\n");
 	print_string_key(fd, indent + 1,             "tag", cfg->tag);
+	print_boolean_key(fd, indent + 1,            "present", cfg->present);
 	print_activity_match(fd, indent + 1, &cfg->match);
-	print_activity_action(fd, indent + 1, &cfg->action);
+	for (i = 0; i < cfg->num_actions; i++)
+		print_activity_action(fd, indent + 1, &cfg->actions[i]);
 	indent_print(fd, indent,                   "}\n");
 }
 
@@ -123,25 +127,22 @@ print_activity_action(int fd, unsigned int indent, const struct tlmsp_cfg_action
 	indent_print(fd, indent,              "action {\n");
 #ifdef notyet
 	if (cfg->fault != TLMSP_CFG_ACTION_FAULT_NONE)
-		print_enum_key(fd, indent + 1,  "apply-fault",
+		print_enum_key(fd, indent + 1,  "fault",
 		    VALUE_TAG_ACTIVITY_ACTION_FAULT, cfg->fault);
 #endif
-	print_payload_key(fd, indent + 1,       "send-after", &cfg->after);
-	print_payload_key(fd, indent + 1,       "send-before", &cfg->before);
-	print_payload_key(fd, indent + 1,       "send-replace", &cfg->replace);
-	print_payload_key(fd, indent + 1,       "reply", &cfg->reply);
+	print_payload(fd, indent + 1, &cfg->send);
 	indent_print(fd, indent,              "}\n");
 }
 
 static void
-print_payload_key(int fd, unsigned int indent, const char *key,
-    const struct tlmsp_cfg_payload *cfg)
+print_payload(int fd, unsigned int indent, const struct tlmsp_cfg_payload *cfg)
 {
 
 	if (cfg->type == TLMSP_CFG_PAYLOAD_NONE)
 		return;
 
-	indent_print(fd, indent,                  "%s {\n", key);
+	indent_print(fd, indent,                  "%s {\n",
+	    cfg->reply ? "reply" : "send");
 	print_int_key(fd, indent + 1,               "context", cfg->context->id);
 	switch (cfg->type) {
 	case TLMSP_CFG_PAYLOAD_NONE:
@@ -213,6 +214,7 @@ print_middlebox(int fd, unsigned int indent,
 	print_string_key(fd, indent + 1,  "address", cfg->address);
 	print_boolean_key(fd, indent + 1, "transparent", cfg->transparent);
 	print_boolean_key(fd, indent + 1, "discovered", cfg->discovered);
+	print_boolean_key(fd, indent + 1, "forbidden", cfg->forbidden);
 	for (i = 0; i < cfg->num_contexts; i++)
 		print_middlebox_context(fd, indent + 1, &cfg->contexts[i]);
 	indent_print(fd, indent,        "}\n");	

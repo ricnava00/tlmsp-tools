@@ -22,6 +22,15 @@ LT_INIT
 AC_CONFIG_MACRO_DIR([m4])
 AC_CONFIG_HEADERS([config.h])
 
+want_debug=no
+AC_ARG_ENABLE(debug,
+  AC_HELP_STRING([--enable-debug], [Enable debug build options])
+  AC_HELP_STRING([--disable-debug], [Disable debug build options]),
+  [want_debug=$enableval])
+if test "$want_debug" = "yes"; then
+  CFLAGS="$CFLAGS -O0 -g"
+fi
+
 AC_C_CONST
 AC_TYPE_SIZE_T
 

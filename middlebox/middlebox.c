@@ -29,6 +29,7 @@
 #include <libdemo/activity.h>
 #include <libdemo/app.h>
 #include <libdemo/splice.h>
+#include <libdemo/pki.h>
 #include <libdemo/print.h>
 #include <libdemo/signal.h>
 
@@ -41,19 +42,29 @@
 
 #define DEFAULT_ACCEPT_BATCH_LIMIT	16
 #define DEFAULT_READ_BUFFER_LIMIT	(1*1024*1024)
+
+#define SET_LOG_TAG(mb)							\
+	demo_tag = (mb) ? ((struct middlebox_state *)(mb))->cfg->tag : NULL
+
 enum {
-	OPT_CONFIG_FILE = 'c',
-	OPT_ERROR_FILE  = 'e',
-	OPT_HELP        = 'h',
-	OPT_CONFIG_TAG  = 't',
-	OPT_VERBOSE     = 'v'
+	OPT_CONFIG_ALL_TAGS  = 'a',
+	OPT_CONFIG_FILE      = 'c',
+	OPT_ERROR_FILE       = 'e',
+	OPT_HELP             = 'h',
+	OPT_PRESENTATION     = 'P',
+	OPT_PORT_SHIFT       = 'p',
+	OPT_CONFIG_TAG       = 't',
+	OPT_VERBOSE          = 'v'
 };
 
 
 static void usage(bool is_error);
 static void show_middlebox_info_cb(void *app_data);
 static struct middlebox_state *new_middlebox(struct ev_loop *loop,
-                                             const char *cfg_file);
+                                             const char *cfg_file,
+                                             const char *tag,
+                                             bool force_presentation,
+                                             int port_shift);
 static void free_middlebox_cb(void *app_data);
 static void accept_cb(EV_P_ ev_io *w, int revents);
 static bool new_splice(struct middlebox_state *middlebox, int sock);
@@ -62,17 +73,21 @@ static void connection_died(struct demo_connection *conn);
 static void conn_cb(EV_P_ ev_io *w, int revents);
 static int read_containers(struct demo_connection *conn);
 static int write_containers(struct demo_connection *conn);
-static bool new_outbound_connection(struct demo_splice *splice);
+static bool new_outbound_connection(struct demo_splice *splice,
+				    const TLMSP_ReconnectState *reconnect_state);
 static int address_match_cb(SSL *ssl, int type, const uint8_t *addr, size_t, void *arg);
 
 
 static struct option options[] =
 {
-	{"config",  required_argument, 0, OPT_CONFIG_FILE},
-	{"help",    no_argument,       0, OPT_HELP},
-	{"errors",  required_argument, 0, OPT_ERROR_FILE},
-	{"tag",     required_argument, 0, OPT_CONFIG_TAG},
-	{"verbose", no_argument,       0, OPT_VERBOSE},
+	{"all",            no_argument,       0, OPT_CONFIG_ALL_TAGS},
+	{"config",         required_argument, 0, OPT_CONFIG_FILE},
+	{"errors",         required_argument, 0, OPT_ERROR_FILE},
+	{"help",           no_argument,       0, OPT_HELP},
+	{"port-shift",     required_argument, 0, OPT_PORT_SHIFT},
+	{"presentation",   no_argument,       0, OPT_PRESENTATION},
+	{"tag",            required_argument, 0, OPT_CONFIG_TAG},
+	{"verbose",        no_argument,       0, OPT_VERBOSE},
 	{NULL, 0, NULL, 0}
 };
 
@@ -84,14 +99,17 @@ usage(bool is_error)
 	int exit_code = is_error ? 1 : 0;
 
 	dprintf(fd, "\n");
-	dprintf(fd, "Usage: %s [options] (-c <file> | --config <file>) (-t <tag> | --tag <tag>)\n", demo_progname);
+	dprintf(fd, "Usage: %s [options] (-c <file> | --config <file>) [-a | (-t <tag> | --tag <tag>)]\n", demo_progname);
 	dprintf(fd, "\n");
 	dprintf(fd, "Options:\n");
+	dprintf(fd, "  -a                          Use all middlebox configurations\n");
 	dprintf(fd, "  -c <file>, --config <file>  TLMSP config file\n");
 	dprintf(fd, "  -e <file>, --errors <file>  Send error messages to file (- means stdout). List\n");
 	dprintf(fd, "                              first to redirect all errors [default: stderr]\n");
 	dprintf(fd, "  -h, --help                  Print this message\n");
-	dprintf(fd, "  -t <tag>, --tag <tag>       Tag of middlebox configuration to be used\n");
+	dprintf(fd, "  -P, --presentation          Force presentation of activities\n");
+	dprintf(fd, "  -p, --port-shift <delta>    Shift all port numbers in configuration by this amount [default: 0]\n");
+	dprintf(fd, "  -t <tag>, --tag <tag>       Tag of middlebox configuration to be used (can be used multiple times)\n");
 	dprintf(fd, "  -v, --verbose               Raise verbosity level by one [default: 0]\n");
 	dprintf(fd, "\n");
 	exit(exit_code);
@@ -108,7 +126,8 @@ show_middlebox_info_cb(void *app_data)
 }
 
 static struct middlebox_state *
-new_middlebox(struct ev_loop *loop, const char *cfg_file)
+new_middlebox(struct ev_loop *loop, const char *cfg_file, const char *tag,
+    bool force_presentation, int port_shift)
 {
 	struct middlebox_state *middlebox;
 	struct demo_app *app;
@@ -124,18 +143,18 @@ new_middlebox(struct ev_loop *loop, const char *cfg_file)
 	}
 
 	app = demo_app_create(false, free_middlebox_cb, show_middlebox_info_cb,
-	    middlebox, 0, cfg_file);
+	    middlebox, 0, cfg_file, force_presentation);
 	if (app == NULL) {
 		free(middlebox);
 		return (NULL);
 	}
 	middlebox->app = app;
 
-	demo_log_msg(1, "Looking up configuration for middlebox '%s'", demo_tag);
-	cfg = tlmsp_cfg_get_middlebox_by_tag(app->cfg, demo_tag);
+	demo_log_msg(1, "Looking up configuration for middlebox '%s'", tag);
+	cfg = tlmsp_cfg_get_middlebox_by_tag(app->cfg, tag);
 	if (cfg == NULL) {
 		demo_print_error("Middlebox configuration with tag '%s' not found",
-		    demo_tag);
+		    tag);
 		goto error;
 	}
 
@@ -143,16 +162,19 @@ new_middlebox(struct ev_loop *loop, const char *cfg_file)
 	next_mb = tlmsp_cfg_get_next_middlebox(app->cfg, cfg);
 
 	middlebox->cfg = cfg;
-	demo_log_msg(1, "Creating middlebox '%s'", cfg->address);
+	demo_log_msg(1, "Creating middlebox '%s' at '%s'", cfg->tag, cfg->address);
+	SET_LOG_TAG(middlebox);
 	middlebox->loop = loop;
 	middlebox->accept_batch_limit = DEFAULT_ACCEPT_BATCH_LIMIT;
 	middlebox->read_buffer_limit = DEFAULT_READ_BUFFER_LIMIT;
+	middlebox->port_shift = port_shift;
 	middlebox->listen_socket = -1;
 	
 	middlebox->listen_addr =
 	    tlmsp_util_address_to_sockaddr(TLMSP_UTIL_ADDRESS_UNKNOWN,
 		(uint8_t *)cfg->address, strlen(cfg->address), &addr_len,
-		middlebox->app->errbuf, sizeof(middlebox->app->errbuf));
+		middlebox->port_shift, middlebox->app->errbuf,
+		sizeof(middlebox->app->errbuf));
 	if (middlebox->listen_addr == NULL) {
 		demo_print_error("Could not convert middlebox address '%s' to "
 		    "sockaddr: %s", cfg->address, middlebox->app->errbuf);
@@ -178,7 +200,7 @@ new_middlebox(struct ev_loop *loop, const char *cfg_file)
 		middlebox->next_addr =
 		    tlmsp_util_address_to_sockaddr(TLMSP_UTIL_ADDRESS_UNKNOWN,
 			(uint8_t *)next_mb->address, strlen(next_mb->address),
-			&addr_len, middlebox->app->errbuf,
+			&addr_len, middlebox->port_shift, middlebox->app->errbuf,
 			sizeof(middlebox->app->errbuf));
 		if (middlebox->next_addr == NULL) {
 			demo_print_error("Could not convert next middlebox "
@@ -201,32 +223,22 @@ new_middlebox(struct ev_loop *loop, const char *cfg_file)
 		demo_print_error_ssl_errq("Failed to enable temporary DH keys");
 		goto error;
 	}
-	if (SSL_CTX_use_certificate_file(middlebox->ssl_ctx, cfg->cert_file,
-		SSL_FILETYPE_PEM) != 1) {
-		demo_print_error_ssl_errq("Failed to load certificate file '%s'",
-		    cfg->cert_file);
+	if (!demo_pki_set_key_and_certificate(middlebox->ssl_ctx,
+		cfg->cert_key_file, cfg->cert_file))
 		goto error;
-	}
-	if (SSL_CTX_use_PrivateKey_file(middlebox->ssl_ctx, cfg->cert_key_file,
-		SSL_FILETYPE_PEM) != 1) {
-		demo_print_error_ssl_errq("Failed to load certificate key file '%s'",
-			cfg->cert_key_file);
-		goto error;
-	}
-	/* XXX This may already be checked during key load */
-        if (!SSL_CTX_check_private_key(middlebox->ssl_ctx)) {
-		demo_print_error_ssl_errq(
-		    "Certificate private key does not match the public key");
-		goto error;
-        }
 	if (cfg->transparent) {
 		/*
 		 * Set the TLMSP middlebox mode to transparent and configure
 		 * the address that will be inserted into the ClientHello
 		 * middlebox list.
 		 */
-		TLMSP_set_transparent(middlebox->ssl_ctx,
-		    tlmsp_util_address_type(cfg->address), cfg->address);
+		if (!TLMSP_set_transparent(middlebox->ssl_ctx,
+			tlmsp_util_address_type(cfg->address), (const void *)cfg->address,
+			strlen(cfg->address))) {
+			demo_print_error_ssl_errq(
+			    "Could not configure transparent middlebox address.");
+			goto error;
+		}
 	}
 	
 	middlebox->listen_socket = socket(middlebox->listen_addr->sa_family,
@@ -296,6 +308,8 @@ accept_cb(EV_P_ ev_io *w, int revents)
 	int sock;
 	unsigned int i;
 
+	SET_LOG_TAG(middlebox);
+
 	for (i = 0; i < middlebox->accept_batch_limit; i++) {
 		sock = accept4(middlebox->listen_socket, NULL, NULL, SOCK_NONBLOCK);
 		if (sock == -1)
@@ -353,6 +367,8 @@ free_splice_cb(void *app_data)
 
 	if (splice_state->next_hop_addr != NULL)
 		OPENSSL_free(splice_state->next_hop_addr);
+
+	TLMSP_reconnect_state_free(splice_state->reconnect_state);
 	free(splice_state);
 }
 
@@ -360,15 +376,53 @@ static void
 connection_died(struct demo_connection *conn)
 {
 	struct demo_splice *splice = conn->splice;
+	struct splice_state *splice_state = splice->app_data;
 	
 	/*
-	 * Stop both connections
+	 * If we arrived here due to SSL_ERROR_WANT_RECONNECT, there will be
+	 * reconnect state to use to create the new connection that will
+	 * replace this one.
 	 */
-	demo_splice_stop_io(splice);
-	demo_connection_wait_for_none(splice->to_client);
-	demo_connection_wait_for_none(splice->to_server);
-	
-	demo_splice_free(splice);
+	if (splice_state->reconnect_state != NULL) {
+		demo_connection_stop_io(conn);
+		demo_connection_wait_for_none(conn);
+		if (!new_outbound_connection(splice,
+			splice_state->reconnect_state))
+			demo_conn_print_error(conn,
+			    "Failed to create replacement connection");
+		demo_connection_free(conn);
+	} else {
+		/*
+		 * Stop this connection
+		 */
+		demo_connection_stop_io(conn);
+		demo_connection_wait_for_none(conn);
+
+		/*
+		 * If the other side is alive flush all containers in this
+		 * connection's read queue to it.  If the other side has
+		 * write data pending, let outbound processing continue,
+		 * otherwise stop it also.
+		 */
+		if (conn->other_side->is_connected) {
+			demo_conn_log(2, conn, "Flushing all containers in "
+			    "read queue to other side");
+			container_queue_drain(&conn->read_queue,
+			    &conn->other_side->write_queue);
+
+			if (!demo_connection_writes_pending(conn->other_side)) {
+				demo_connection_stop_io(conn->other_side);
+				demo_connection_wait_for_none(conn->other_side);
+			}
+		}
+		
+		/*
+		 * When both connections are dead, the splice is done.
+		 */
+		if (!conn->other_side->is_connected) {
+			demo_splice_free(splice);
+		}
+	}
 }
 
 static void
@@ -376,13 +430,17 @@ conn_cb(EV_P_ ev_io *w, int revents)
 {
 	struct demo_connection *conn = w->data;
 	struct demo_splice *splice = conn->splice;
+	struct splice_state *splice_state = splice->app_data;
+	struct middlebox_state *middlebox = splice_state->middlebox;
 	struct demo_connection *conn_to_client = splice->to_client;
 	struct demo_connection *conn_to_server = splice->to_server;
 	int result;
 	int ssl_error;
 	bool pending_writes;
-	
-	demo_splice_stop_io(splice);
+
+	SET_LOG_TAG(middlebox);
+
+	demo_splice_pause_io(splice);
 	demo_connection_events_arrived(conn, revents);
 
 	if (revents & EV_ERROR) {
@@ -405,6 +463,8 @@ do_handshake:
 			demo_conn_log(1, conn, "Handshake complete");
 			demo_connection_set_phase(conn, DEMO_CONNECTION_PHASE_APPLICATION);
 			demo_connection_wait_for(conn, EV_READ);
+			if (!demo_splice_handshake_complete(splice))
+				connection_died(conn);
 			break;
 		default:
 			switch (ssl_error) {
@@ -414,10 +474,20 @@ do_handshake:
 				 * Establish outbound connection and
 				 * re-enter handshake.
 				 */
-				if (!new_outbound_connection(splice))
+				if (!new_outbound_connection(splice, NULL))
 					connection_died(conn);
 				else
 					goto do_handshake;
+				break;
+			case SSL_ERROR_WANT_RECONNECT:
+				demo_conn_log(5, conn, "SSL_ERROR_WANT_RECONNECT");
+				/*
+				 * Re-establish outbound connection and
+				 * re-enter handshake.
+				 */
+				splice_state->reconnect_state =
+				    TLMSP_get_reconnect_state(conn->ssl);
+				connection_died(splice->to_server);
 				break;
 			case SSL_ERROR_WANT_READ:
 				demo_conn_log(5, conn, "SSL_ERROR_WANT_READ");
@@ -541,9 +611,10 @@ read_containers(struct demo_connection *conn)
 			    TLMSP_container_length(container),
 			    TLMSP_container_context(container));
 			if (TLMSP_container_readable(container))
-				demo_conn_log_buf(3, conn, "Container data",
+				demo_conn_log_buf(3, conn,
 				    TLMSP_container_get_data(container),
-				    TLMSP_container_length(container), true);
+				    TLMSP_container_length(container), true,
+				    "Container data");
 			else
 				demo_conn_log(3, conn, "Container is opaque");
 			if (!container_queue_add(&conn->read_queue, container)) {
@@ -606,9 +677,10 @@ write_containers(struct demo_connection *conn)
 		    TLMSP_container_length(container),
 		    TLMSP_container_context(container));
 		if (TLMSP_container_readable(container))
-			demo_conn_log_buf(3, conn, "Container data",
+			demo_conn_log_buf(3, conn,
 			    TLMSP_container_get_data(container),
-			    TLMSP_container_length(container), true);
+			    TLMSP_container_length(container), true,
+			    "Container data");
 		else
 			demo_conn_log(3, conn, "Container %s",
 			    TLMSP_container_deleted(container) ?
@@ -648,7 +720,8 @@ write_containers(struct demo_connection *conn)
 
 
 static bool
-new_outbound_connection(struct demo_splice *splice)
+new_outbound_connection(struct demo_splice *splice,
+    const TLMSP_ReconnectState *reconnect_state)
 {
 	struct demo_connection *inbound_conn = splice->to_client;
 	struct splice_state *splice_state = splice->app_data;
@@ -658,34 +731,62 @@ new_outbound_connection(struct demo_splice *splice)
 	int sock;
 	bool result = false;
 
-	if (middlebox->cfg->transparent) {
+	if (reconnect_state == NULL) {
 		/*
-		 * If we are a transparent middlebox, then normally the next
-		 * hop would be determined by the destination IP of the
-		 * inbound connection.  In this demo, transparency at the IP
-		 * layer is emulated, not actual, so the destination IP of
-		 * the inbound connection does not indicate the next hop.
-		 * The next hop is instead determined by the address of the
-		 * next middlebox in the configuration file (if present, now
-		 * in middlebox->next_addr), or if there was not a next
-		 * middlebox in the configuration, the address of the server
-		 * from the ClientHello.
+		 * First round outbound connection.
 		 */
-		if (middlebox->next_addr == NULL)
-			if (!TLMSP_get_server_address_instance(inbound_conn->ssl,
+		if (middlebox->cfg->transparent) {
+			/*
+			 * If we are a transparent middlebox, then normally
+			 * the next hop would be determined by the
+			 * destination IP of the inbound connection.  In
+			 * this demo, transparency at the IP layer is
+			 * emulated, not actual, so the destination IP of
+			 * the inbound connection does not indicate the next
+			 * hop.  The next hop is instead determined by the
+			 * address of the next middlebox in the
+			 * configuration file (if present, now in
+			 * middlebox->next_addr), or if there was not a next
+			 * middlebox in the configuration, the address of
+			 * the server from the ClientHello.
+			 */
+			if (middlebox->next_addr == NULL)
+				if (!TLMSP_get_server_address_instance(
+					inbound_conn->ssl,
+					&splice_state->next_hop_addr_type,
+					&splice_state->next_hop_addr,
+					&splice_state->next_hop_addr_len))
+					return (false);
+		} else {
+			/*
+			 * If we are not a transparent middlebox, then the
+			 * next hop will come from the next entry in the
+			 * middlebox list present in the ClientHello, or if
+			 * there is no next entry in the middlebox list,
+			 * then from the server address in the ClientHello.
+			 */
+			if (!TLMSP_get_next_hop_address_instance(
+				inbound_conn->ssl,
 				&splice_state->next_hop_addr_type,
 				&splice_state->next_hop_addr,
 				&splice_state->next_hop_addr_len))
 				return (false);
+		}
 	} else {
 		/*
-		 * If we are not a transparent middlebox, then the next hop
-		 * will come from the next entry in the middlebox list
-		 * present in the ClientHello, or if there is no next entry
-		 * in the middlebox list, then from the server address in
-		 * the ClientHello.
+		 * Second round (post-discovery with changed next hop)
+		 * connection attempt.  Normally, a middlebox would call
+		 * TLMSP_get_next_hop_address_reconnect() to determine the
+		 * address to connect the transport to based on the
+		 * middlebox list contained in the reconnect state.  Here,
+		 * we call TLMSP_get_next_hop_address_reconnect_ex() in
+		 * order to support emulated transparency, under which the
+		 * next hop may be a discovered transparent middlebox which
+		 * normally would not be considered the next hop to connect
+		 * to.
 		 */
-		if (!TLMSP_get_next_hop_address_instance(inbound_conn->ssl,
+		if (!TLMSP_get_next_hop_address_reconnect(
+			splice_state->reconnect_state,
 			&splice_state->next_hop_addr_type,
 			&splice_state->next_hop_addr,
 			&splice_state->next_hop_addr_len))
@@ -700,8 +801,8 @@ new_outbound_connection(struct demo_splice *splice)
 		outbound_addr =
 		    tlmsp_util_address_to_sockaddr(splice_state->next_hop_addr_type,
 			splice_state->next_hop_addr, splice_state->next_hop_addr_len,
-			&outbound_addr_len, middlebox->app->errbuf,
-			sizeof(middlebox->app->errbuf));
+			&outbound_addr_len, middlebox->port_shift,
+			middlebox->app->errbuf, sizeof(middlebox->app->errbuf));
 		if (outbound_addr == NULL) {
 			demo_print_error("Could not convert outbound address "
 			    "'%s' to sockaddr: %s", outbound_addr,
@@ -730,7 +831,7 @@ new_outbound_connection(struct demo_splice *splice)
 
 	result = true;
 	
-error:
+ error:
 	free(outbound_addr);
 	return (result);
 }
@@ -771,10 +872,18 @@ int main(int argc, char **argv)
 	int opt_index;
 	int opt_code;
 	const char *cfg_file;
+	int port_shift;
+	bool all_tags;
+	bool force_presentation;
 	bool has_config;
 	bool has_tag;
+	const char *tags[TLMSP_MAX_MIDDLEBOXES];
+	unsigned int num_tags;
+	unsigned int i;
 	struct ev_loop *loop;
-	struct middlebox_state *single_middlebox;
+	const struct tlmsp_cfg *cfg;
+	struct middlebox_state *middleboxes[TLMSP_MAX_MIDDLEBOXES];
+	unsigned int num_middleboxes;
 
 	/*
 	 * argv[0] may be modified by basename(), and future calls to
@@ -784,12 +893,16 @@ int main(int argc, char **argv)
 	demo_pid = getpid();
 	demo_signal_handling_init();
 
+	port_shift = 0;
+	all_tags = false;
+	force_presentation = false;
 	has_config = false;
 	has_tag = false;
+	num_tags = 0;
 	opterr = 0; /* prevent getopt from printing its own error messages */
 	for (;;) {
 		opt_index = 0;
-		opt_code = getopt_long(argc, argv, ":c:e:ht:v", options,
+		opt_code = getopt_long(argc, argv, ":ac:e:hPp:t:v", options,
 		    &opt_index);
 
 		if (opt_code == -1)
@@ -797,6 +910,10 @@ int main(int argc, char **argv)
 
 		switch (opt_code)
 		{
+		case OPT_CONFIG_ALL_TAGS:
+			all_tags = true;
+			has_tag = true;
+			break;
 		case OPT_CONFIG_FILE:
 			cfg_file = optarg;
 			has_config = true;
@@ -814,8 +931,27 @@ int main(int argc, char **argv)
 				}
 			}
 			break;
+		case OPT_PORT_SHIFT:
+			port_shift = strtol(optarg, NULL, 10);
+			break;
+		case OPT_PRESENTATION:
+			force_presentation = true;
+			break;
 		case OPT_CONFIG_TAG:
-			demo_tag = optarg;
+			if (num_tags == TLMSP_MAX_MIDDLEBOXES) {
+				demo_print_error("There can be no more than %u "
+				    "middleboxes", TLMSP_MAX_MIDDLEBOXES);
+				exit(1);
+			}
+			for (i = 0; i < num_tags; i++) {
+				if (strcmp(tags[i], optarg) == 0) {
+					demo_print_error("Duplicate tag '%s'",
+					    optarg);
+					exit(1);
+				}
+			}
+			tags[num_tags] = optarg;
+			num_tags++;
 			has_tag = true;
 			break;
 		case OPT_HELP:
@@ -829,7 +965,7 @@ int main(int argc, char **argv)
 			    argv[optind - 1]);
 			usage(true);
 		case '?':
-			demo_print_error("Unknown option %s", argv[optind]);
+			demo_print_error("Unknown option %s", argv[optind - 1]);
 			usage(true);
 			break;
 		default:
@@ -851,18 +987,49 @@ int main(int argc, char **argv)
 	
 	loop = ev_default_loop(EVFLAG_AUTO);
 
-	single_middlebox = new_middlebox(loop, cfg_file);
-	if (single_middlebox == NULL)
-	{
-		demo_print_error("Failed to create new middlebox");
-		exit(1);
+	if (all_tags) {
+		char errbuf[DEMO_ERRBUF_SIZE];
+
+		cfg = tlmsp_cfg_parse_file(cfg_file, errbuf,  sizeof(errbuf));
+		if (cfg == NULL) {
+			demo_print_error("Failed to parse config file: %s",
+			    errbuf);
+			exit(1);
+		}
+		num_tags = cfg->num_middleboxes;
+		for (i = 0; i < num_tags; i++)
+			tags[i] = cfg->middleboxes[i].tag;
 	}
+
+	num_middleboxes = num_tags;
+	for (i = 0; i < num_middleboxes; i++) {
+		SET_LOG_TAG(NULL);
+		middleboxes[i] = new_middlebox(loop, cfg_file, tags[i],
+		    force_presentation, port_shift);
+		if (middleboxes[i] == NULL) {
+			demo_print_error("Failed to created new middlebox '%s'",
+			    tags[i]);
+			exit(1);
+		}
+	}
+
+	if (all_tags)
+		tlmsp_cfg_free(cfg);
 
 	demo_signal_monitor_start(EV_A);
 
 	ev_run(EV_A_ 0);
+	/*
+	 * Now that the event loop has exited, all log messages are
+	 * process-level.
+	 */
+	SET_LOG_TAG(NULL);
 
-	demo_app_free(single_middlebox->app);
+	for (i = 0; i < num_middleboxes; i++) {
+		SET_LOG_TAG(middleboxes[i]);
+		demo_app_free(middleboxes[i]->app);
+	}
+	SET_LOG_TAG(NULL);
 	if ((demo_error_fd != STDERR_FILENO) && (demo_error_fd != STDOUT_FILENO))
 		close(demo_error_fd);
 	demo_log_msg(0, "Clean shutdown complete.\n");

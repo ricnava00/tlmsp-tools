@@ -26,6 +26,7 @@
 #include <openssl/tlmsp.h>
 
 #include "activity.h"
+#include "app.h"
 #include "connection.h"
 #include "container_queue.h"
 #include "print.h"
@@ -101,13 +102,10 @@ static void demo_activity_get_activities(struct demo_connection *conn,
                                          struct tlmsp_cfg_activity ***activities,
                                          unsigned int *num_activities);
 static bool demo_activity_queue_payload(struct demo_connection *conn,
+                                        bool replies,
                                         struct tlmsp_cfg_payload *payload,
                                         struct match_groups *match_groups,
-                                        bool create_if_empty);
-static bool demo_activity_add_time_triggered_message(struct demo_connection *conn,
-                                                     struct tlmsp_cfg_payload *payload,
-                                                     ev_tstamp at, ev_tstamp every,
-                                                     bool create_if_empty);
+                                        bool present);
 static void demo_activity_time_triggered_cb(EV_P_ ev_timer *w, int revents);
 static bool demo_activity_get_payload_data(struct demo_connection *conn,
                                            struct tlmsp_cfg_payload *payload,
@@ -136,13 +134,22 @@ static bool demo_activity_pattern_match(struct demo_connection *conn,
 static void demo_activity_free_match_groups(struct match_groups *groups);
 static bool demo_activity_queue_range_to_buffer(struct container_queue_range *range,
                                                 uint8_t **buf, size_t *len);
-static bool demo_activity_apply_match_action(struct demo_connection *inbound_conn,
-                                             struct demo_activity_match_state *match_state);
-static bool demo_activity_apply_match_delete_drop_or_forward(struct demo_connection *log_conn,
-                                                             struct container_queue *read_q,
-                                                             struct container_queue *write_q,
-                                                             struct container_queue_range *match_range,
-                                                             bool drop_all, bool delete_match);
+static bool demo_activity_apply_match_actions(struct demo_connection *inbound_conn,
+                                              struct demo_activity_match_state *match_state);
+static bool demo_activity_apply_actions(struct demo_connection *conn,
+                                        struct tlmsp_cfg_activity *activity,
+                                        struct match_groups *match_groups, bool sends,
+                                        bool replies);
+static bool demo_activity_drop_or_forward_match_preamble(struct demo_connection *log_conn,
+                                                         struct container_queue *read_q,
+                                                         struct container_queue *write_q,
+                                                         struct container_queue_range *match_range,
+                                                         bool drop);
+static bool demo_activity_drop_or_delete_match(struct demo_connection *log_conn,
+                                               struct container_queue *read_q,
+                                               struct container_queue *write_q,
+                                               struct container_queue_range *match_range,
+                                               bool drop);
 static struct demo_connection *demo_activity_get_dataflow_conn(struct demo_connection *conn,
                                                                bool replies);
 
@@ -163,14 +170,12 @@ demo_activity_conn_queue_initial(struct demo_connection *conn)
 
 	if (conn->splice != NULL) {
 		/*
-		 * Middleboxes have an 'other side' for each connection that
-		 * initial data can be queued to.  If the other side
-		 * connection has any initial reply activities, queue them
-		 * to this connection now.
+		 * On a middlebox, this connection can have initial data
+		 * queued to it due to defined reply activities.
 		 */
 		demo_activity_get_activities(conn, true, &activities,
 		    &num_activities);
-		if (!demo_activity_queue_initial(conn->other_side, activities,
+		if (!demo_activity_queue_initial(conn, activities,
 			num_activities, true))
 			return (false);
 	}
@@ -184,28 +189,27 @@ demo_activity_queue_initial(struct demo_connection *conn,
     bool replies)
 {
 	struct tlmsp_cfg_activity *activity;
+	struct demo_connection *apply_conn;
 	unsigned int i;
 
+	/*
+	 * The conn here is the conn to queue writes to, but the
+	 * conn that demo_activity_apply_actions() requires is the
+	 * source conn.
+	 */
+	apply_conn  = demo_activity_get_dataflow_conn(conn, replies);
 	for (i = 0; i < num_activities; i++) {
 		activity = activities[i];
 		if (!activity->match.initial)
 			continue;
 
-		if (replies) {
-			if (!demo_activity_queue_payload(conn,
-				&activity->action.reply, NULL, true))
-				return (false);
-		} else {
-			if (!demo_activity_queue_payload(conn,
-				&activity->action.before, NULL, true))
-				return (false);
-			if (!demo_activity_queue_payload(conn,
-				&activity->action.replace, NULL, false))
-				return (false);
-			if (!demo_activity_queue_payload(conn,
-				&activity->action.after, NULL, true))
-				return (false);
-		}
+		if (activity->present)
+			demo_conn_present(conn, "Activity %s initial",
+			    activity->tag);
+
+		if (!demo_activity_apply_actions(apply_conn, activity, NULL,
+			!replies, replies))
+			return (false);
 	}
 
 	return (true);
@@ -253,8 +257,6 @@ demo_activity_conn_tear_down_time_triggered(struct demo_connection *conn)
 	while (msg != NULL) {
 		next = msg->next;
 		ev_timer_stop(EV_A_ &msg->timer);
-		if (msg->free_data)
-			free((void *)msg->p);
 		free(msg);
 		msg = next;
 	}
@@ -281,6 +283,7 @@ demo_activity_set_up_time_triggered(struct demo_connection *conn,
     bool replies)
 {
 	struct tlmsp_cfg_activity *activity;
+	struct demo_time_triggered_msg *msg;
 	unsigned int i;
 	ev_tstamp at, every;
 	
@@ -294,22 +297,33 @@ demo_activity_set_up_time_triggered(struct demo_connection *conn,
 		if ((activity->match.at == 0.0) && (activity->match.every == 0.0))
 			continue;
 
+		msg = calloc(1, sizeof(*msg));
+		if (msg == NULL)
+			return (false);
+
+		msg->conn = conn;
 		at = activity->match.at;
 		every = activity->match.every;
-		if (replies) {
-			if (!demo_activity_add_time_triggered_message(conn,
-				&activity->action.reply, at, every, true))
-				return (false);
-		} else {
-			if (!demo_activity_add_time_triggered_message(conn,
-				&activity->action.before, at, every, true))
-				return (false);
-			if (!demo_activity_add_time_triggered_message(conn,
-				&activity->action.replace, at, every, false))
-				return (false);
-			if (!demo_activity_add_time_triggered_message(conn,
-				&activity->action.after, at, every, true))
-				return (false);
+		ev_timer_init(&msg->timer, demo_activity_time_triggered_cb,
+		    (at == 0.0) ? every : at, 0.0);
+		msg->timer.data = msg;
+		msg->interval = every;
+		msg->activity = activity;
+
+		if (every == 0.0)
+			demo_conn_log(2, conn, "Adding one-shot activity %s at "
+			    "%u ms", activity->tag, (unsigned int)(at * 1000.0));
+		else
+			demo_conn_log(2, conn, "Adding periodic activity %s at "
+			    "%u ms, period %u ms", activity->tag,
+			    (unsigned int)(((at == 0.0) ? every : at) * 1000.0),
+			    (unsigned int)(every * 1000.0));
+
+		if (conn->time_triggered_messages == NULL)
+			conn->time_triggered_messages = msg;
+		else {
+			msg->next = conn->time_triggered_messages;
+			conn->time_triggered_messages = msg;
 		}
 	}
 
@@ -335,9 +349,9 @@ demo_activity_get_activities(struct demo_connection *conn, bool replies,
 }
 
 static bool
-demo_activity_queue_payload(struct demo_connection *conn,
+demo_activity_queue_payload(struct demo_connection *conn, bool replies,
     struct tlmsp_cfg_payload *payload, struct match_groups *match_groups,
-    bool create_if_empty)
+    bool present)
 {
 	struct container_queue *q = &conn->write_queue;
 	SSL *ssl = q->conn->ssl;
@@ -350,7 +364,12 @@ demo_activity_queue_payload(struct demo_connection *conn,
 	bool result;
 	bool free_data;
 
+	/* skip if the payload is not configured */
 	if (payload->type == TLMSP_CFG_PAYLOAD_NONE)
+		return (true);
+
+	/* skip if processing replies and this isn't one */
+	if (replies && !payload->reply)
 		return (true);
 
 	data = NULL;
@@ -360,103 +379,41 @@ demo_activity_queue_payload(struct demo_connection *conn,
 		&len, &free_data))
 		goto out;
 
-	if ((len != 0) || create_if_empty) {
-		offset = 0;
-		remaining = len;
-		do {
-			if (remaining > MAX_CONTAINER_SIZE)
-				container_len = MAX_CONTAINER_SIZE;
-			else
-				container_len = remaining;
-			if (!TLMSP_container_create(ssl, &container,
-				payload->context->id, &data[offset],
-				container_len)) {
-				demo_conn_print_error_ssl_errq(conn,
-				    "Failed to create container for payload");
-				goto out;
-			}
-
-			if (!container_queue_add(q, container)) {
-				demo_conn_print_error(conn,
-				    "Failed to add payload container to queue\n");
-				TLMSP_container_free(ssl, container);
-				goto out;
-			}
-			demo_conn_log(2, conn, "Queued container (length=%u) in "
-			    "context %u", container_len, payload->context->id);
-
-			offset += container_len;
-			remaining -= container_len;
-		} while (remaining > 0);
-	}
-
-	result = true;
-
-out:
-	if ((data != NULL) && free_data)
-		free((void *)data);
-	return (result);
-}
-
-
-static bool
-demo_activity_add_time_triggered_message(struct demo_connection *conn,
-    struct tlmsp_cfg_payload *payload, ev_tstamp at, ev_tstamp every,
-    bool create_if_empty)
-{
-	struct demo_time_triggered_msg *msg;
-	const uint8_t *data;
-	size_t len;
-	bool result;
-	bool free_data;
-
-	if (payload->type == TLMSP_CFG_PAYLOAD_NONE)
-		return (true);
-
-	data = NULL;
-	free_data = false;
-	result = false;
-	if (!demo_activity_get_payload_data(conn, payload, NULL, &data, &len,
-		&free_data))
-		goto out;
-
-	if ((len != 0) || create_if_empty) {
-		msg = calloc(1, sizeof(*msg));
-		if (msg == NULL)
-			goto out;
-
-		msg->conn = conn;
-		ev_timer_init(&msg->timer, demo_activity_time_triggered_cb,
-		    (at == 0.0) ? every : at, 0.0);
-		msg->timer.data = msg;
-		msg->interval = every;
-		msg->context_id = payload->context->id;
-		msg->p = data;
-		msg->len = len;
-		msg->free_data = free_data;
-
-		if (every == 0.0)
-			demo_conn_log(2, conn, "Adding on-shot message at %u ms "
-			    "(length=%u) in context %u", (unsigned int)(at * 1000.0),
-			    len, msg->context_id);
+	if (present)
+		demo_conn_present_buf(conn, data, len, true, "Sent");
+			    
+	offset = 0;
+	remaining = len;
+	do {
+		if (remaining > MAX_CONTAINER_SIZE)
+			container_len = MAX_CONTAINER_SIZE;
 		else
-			demo_conn_log(2, conn, "Adding periodic message at %u ms, "
-			    "period %u ms (length=%u) in context %u",
-			    (unsigned int)(((at == 0.0) ? every : at) * 1000.0),
-			    (unsigned int)(every * 1000.0), len, msg->context_id);
-
-		if (conn->time_triggered_messages == NULL)
-			conn->time_triggered_messages = msg;
-		else {
-			msg->next = conn->time_triggered_messages;
-			conn->time_triggered_messages = msg;
+			container_len = remaining;
+		if (!TLMSP_container_create(ssl, &container,
+			payload->context->id, &data[offset],
+			container_len)) {
+			demo_conn_print_error_ssl_errq(conn,
+			    "Failed to create container for payload");
+			goto out;
 		}
-	}
+
+		if (!container_queue_add(q, container)) {
+			demo_conn_print_error(conn,
+			    "Failed to add payload container to queue");
+			TLMSP_container_free(ssl, container);
+			goto out;
+		}
+		demo_conn_log(2, conn, "Queued container (length=%u) in "
+		    "context %u", container_len, payload->context->id);
+
+		offset += container_len;
+		remaining -= container_len;
+	} while (remaining > 0);
 
 	result = true;
 
-out:
-	if (!result && (data != NULL) && free_data)
+ out:
+	if ((data != NULL) && free_data)
 		free((void *)data);
 	return (result);
 }
@@ -466,40 +423,16 @@ demo_activity_time_triggered_cb(EV_P_ ev_timer *w, int revents)
 {
 	struct demo_time_triggered_msg *msg = w->data;
 	struct demo_connection *conn = msg->conn;
-	TLMSP_Container *container;
-	size_t offset;
-	size_t remaining;
-	size_t container_len;
+	struct tlmsp_cfg_activity *activity = msg->activity;
 
-	offset = 0;
-	remaining = msg->len;
-	do {
-		if (remaining > MAX_CONTAINER_SIZE)
-			container_len = MAX_CONTAINER_SIZE;
-		else
-			container_len = remaining;
+	if (activity->present)
+		demo_conn_present(conn, "Activity %s time-triggered",
+		    activity->tag);
 
-		if (!TLMSP_container_create(conn->ssl, &container,
-			msg->context_id, &msg->p[offset], container_len)) {
-			demo_conn_print_error_ssl_errq(conn, "Failed to create "
-			    "container for time-triggered message");
-			return;
-		}
+	if (!demo_activity_apply_actions(conn, activity, NULL, true, true))
+		return;
 
-		if (!container_queue_add(&conn->write_queue, container)) {
-			demo_conn_print_error(conn,
-			    "Failed to add time-triggered container to queue\n");
-			TLMSP_container_free(conn->ssl, container);
-			return;
-		}
-		demo_conn_log(2, conn, "Queued time-triggered container "
-		    "(length=%u) in context %u", container_len, msg->context_id);
-
-		offset += container_len;
-		remaining -= container_len;
-	} while (remaining > 0);
-
-	demo_connection_stop_io(conn);
+	demo_connection_pause_io(conn);
 	demo_connection_wait_for(conn, EV_WRITE);
 	demo_connection_resume_io(conn);
 
@@ -635,9 +568,9 @@ demo_activity_run_payload_handler(struct demo_connection *log_conn,
 		state.log_conn = log_conn;
 		
 		/* we pass the handler the entire match */
-		state.out_buf = match_groups->groups[0].p;
+		state.out_buf = match_groups ? match_groups->groups[0].p : NULL;
 		state.out_offset = 0;
-		state.out_remaining = match_groups->groups[0].len;
+		state.out_remaining = match_groups ? match_groups->groups[0].len : 0;
 
 		state.in_buf = NULL;
 		state.in_size = 0;
@@ -711,17 +644,19 @@ demo_activity_handler_stdin_cb(EV_P_ ev_io *w, int revents)
 	struct payload_handler_state *state = w->data;
 	ssize_t bytes_written;
 
-	bytes_written = write(w->fd, state->out_buf, state->out_remaining);
-	if (bytes_written == -1) {
-		demo_conn_log(5, state->log_conn, "stdin -1");
-		if (errno != EAGAIN)
+	if (state->out_remaining > 0) {
+		bytes_written = write(w->fd, state->out_buf, state->out_remaining);
+		if (bytes_written == -1) {
+			demo_conn_log(5, state->log_conn, "stdin -1");
+			if (errno != EAGAIN)
 			ev_break(EV_A_ EVBREAK_ONE);
-		return;
+			return;
+		}
+		demo_conn_log(5, state->log_conn,
+		    "Wrote %zd bytes to handler's stdin", bytes_written);
+		state->out_offset += bytes_written;
+		state->out_remaining -= bytes_written;
 	}
-	demo_conn_log(5, state->log_conn,
-	    "Wrote %zd bytes to handler's stdin", bytes_written);
-	state->out_offset += bytes_written;
-	state->out_remaining -= bytes_written;
 	if (state->out_remaining == 0) {
 		/* provide EOF to handler */
 		close(w->fd);
@@ -949,7 +884,7 @@ demo_activity_process_read_queue(struct demo_connection *conn)
 
 		return_false = false;
 		if (selected_match_state != NULL) {
-			return_false = !demo_activity_apply_match_action(conn,
+			return_false = !demo_activity_apply_match_actions(conn,
 			    selected_match_state);
 			if (return_false)
 				demo_conn_print_error(conn,
@@ -1095,6 +1030,7 @@ demo_activity_pattern_match(struct demo_connection *conn,
 	uint8_t *search_buf;
 	size_t first_offset, offset;
 	size_t search_len, match_len, match_offset;
+	bool data_spans_end_of_queue;
 	bool match_found;
 	
 	if (match->pattern.type == TLMSP_CFG_MATCH_PATTERN_NONE)
@@ -1128,7 +1064,7 @@ demo_activity_pattern_match(struct demo_connection *conn,
 			break;
 		}
 	}
-
+	data_spans_end_of_queue = (last->next == NULL);
 
 	search_range.first = first;
 	search_range.first_offset = 0;
@@ -1310,7 +1246,9 @@ demo_activity_compile_regex(const struct tlmsp_cfg *cfg)
 		re = pcre2_compile(
 		    (PCRE2_SPTR8)match->pattern.param.s,
 		    PCRE2_ZERO_TERMINATED,
-		    PCRE2_ALT_BSUX, /* JavaScript-like treatment of \U \u \x */
+		    PCRE2_ALT_BSUX | /* JavaScript-like treatment of \U \u \x */
+		    PCRE2_DOLLAR_ENDONLY | /* $ matches the end of the search string only */
+		    PCRE2_DOTALL, /* dot matches any character, including newline chars */
 		    &errcode, &erroffset, NULL);
 		if (re == NULL) {
 			pcre2_get_error_message(errcode, (PCRE2_UCHAR8 *)errbuf,
@@ -1394,216 +1332,286 @@ out:
 }
 
 static bool
-demo_activity_apply_match_action(struct demo_connection *inbound_conn,
+demo_activity_apply_match_actions(struct demo_connection *inbound_conn,
     struct demo_activity_match_state *match_state)
 {
-	struct tlmsp_cfg_action *action = &match_state->activity->action;
+	struct tlmsp_cfg_activity *activity = match_state->activity;
 	struct container_queue_range *match_range = &match_state->match_range;
-	struct demo_connection *outbound_conn_for_replies;
 	struct demo_connection *outbound_conn;
-	bool replaced;
+	uint8_t *match_buf;
+	size_t match_buf_len;
 	bool is_endpoint;
 
-	/* XXX fault support */
+	demo_conn_log(5, inbound_conn, "match range: container %"PRIu64" offset "
+	    "%zu to container %"PRIu64" remainder %zu",
+	    match_range->first->container_number,
+	    match_range->first_offset,
+	    match_range->last->container_number,
+	    match_range->last_remainder);
+
+	if (activity->present) {
+		if (activity->match.pattern.type != TLMSP_CFG_MATCH_PATTERN_NONE) {
+			if (!demo_activity_queue_range_to_buffer(match_range,
+				&match_buf, &match_buf_len))
+				demo_conn_present(inbound_conn,
+				    "Activity %s pattern-matched <data unavailable>",
+				    activity->tag);
+			else
+				demo_conn_present_buf(inbound_conn, match_buf,
+				    match_buf_len, true, "Activity %s pattern-matched",
+				    activity->tag);
+		} else if (activity->match.container.type != TLMSP_CFG_MATCH_CONTAINER_NONE) {
+			if (match_range->first == match_range->last)
+				demo_conn_present(inbound_conn,
+				    "Activity %s matched container %" PRIu64,
+				    activity->tag, match_range->first->container_number);
+			else
+				demo_conn_present(inbound_conn,
+				    "Activity %s matched containers %" PRIu64 " to %" PRIu64,
+				    activity->tag, match_range->first->container_number,
+				    match_range->last->container_number);
+		}
+	}
 
 	is_endpoint = (inbound_conn->splice == NULL);
 	outbound_conn = demo_activity_get_dataflow_conn(inbound_conn, false);
-	outbound_conn_for_replies = demo_activity_get_dataflow_conn(inbound_conn, true);
-
-	if (TLMSP_CFG_PAYLOAD_ENABLED(&action->reply)) {
-		demo_conn_log(5, inbound_conn, "Applying 'reply' action");
-		if (!demo_activity_queue_payload(outbound_conn_for_replies,
-			&action->reply, &match_state->match_groups, true))
-			return (false);
-	}
-
-	if (TLMSP_CFG_PAYLOAD_ENABLED(&action->before)) {
-		demo_conn_log(5, inbound_conn, "Applying 'before' action");
-		if (!demo_activity_queue_payload(outbound_conn, &action->before,
-			&match_state->match_groups, true))
-			return (false);
-	}
-
-	replaced = false;
-	if (TLMSP_CFG_PAYLOAD_ENABLED(&action->replace)) {
-		demo_conn_log(5, inbound_conn, "Applying 'replace' action");
-		if (!demo_activity_queue_payload(outbound_conn, &action->replace,
-			&match_state->match_groups, false))
-			return (false);
-		replaced = true;
-	}
-	if (!demo_activity_apply_match_delete_drop_or_forward(outbound_conn,
+	if (!demo_activity_drop_or_forward_match_preamble(outbound_conn,
 		&inbound_conn->read_queue, &outbound_conn->write_queue,
-		match_range, is_endpoint, replaced)) {
+		match_range, is_endpoint)) {
 		return (false);
 	}
 
-	if (TLMSP_CFG_PAYLOAD_ENABLED(&action->after)) {
-		demo_conn_log(5, inbound_conn, "Applying 'after' action");
-		if (!demo_activity_queue_payload(outbound_conn, &action->after,
-			&match_state->match_groups, true))
-			return (false);
+	if (!demo_activity_apply_actions(inbound_conn, activity,
+		&match_state->match_groups, true, true))
+		return (false);
+
+	if (!demo_activity_drop_or_delete_match(outbound_conn,
+		&inbound_conn->read_queue, &outbound_conn->write_queue,
+		match_range, is_endpoint)) {
+		return (false);
 	}
 
 	return (true);
 }
 
 static bool
-demo_activity_apply_match_delete_drop_or_forward(struct demo_connection *log_conn,
-    struct container_queue *read_q, struct container_queue *write_q,
-    struct container_queue_range *match_range, bool drop_all,
-    bool delete_match)
+demo_activity_apply_actions(struct demo_connection *conn,
+    struct tlmsp_cfg_activity *activity, struct match_groups *match_groups,
+    bool sends, bool replies)
 {
-	SSL *write_q_ssl = write_q->conn->ssl;
-	TLMSP_Container *container, *new_container;
-	struct container_queue_entry *entry;
-	const uint8_t *src;
-	size_t delete_or_forward_bytes;
+	struct tlmsp_cfg_action *action;
+	struct demo_connection *outbound_conn_for_replies;
+	struct demo_connection *outbound_conn;
+	struct demo_connection *send_conn;
+	bool reply_filter;
+	unsigned int i;
 
-	if (drop_all)
-		demo_conn_log(5, log_conn, "Drop all to end of match");
-	else
-		demo_conn_log(5, log_conn, "Forward preamble, %s match",
-		    delete_match ? "delete" : "forward");
+	outbound_conn = demo_activity_get_dataflow_conn(conn, false);
+	outbound_conn_for_replies = demo_activity_get_dataflow_conn(conn, true);
 
-	/*
-	 * If we aren't dropping all and we're deleting the match, we need a
-	 * separate loop to handle the preamble.  If we are dropping all or
-	 * are not deleting the match, then everything (in this case, either
-	 * drop or forward) is handled in the second loop).
-	 */
-	if (!drop_all && delete_match) {
-		container = container_queue_head(read_q);
-		while (container != match_range->first->container) {
-			container_queue_remove_head(read_q);
-			demo_conn_log(5, log_conn, "Deleting preamble container "
-			    "(context=%u, length=%zu)",
-			    TLMSP_container_context(container),
-			    TLMSP_container_length(container));
-			if (!TLMSP_container_delete(write_q_ssl, container)) {
-				demo_conn_print_error_ssl_errq(log_conn,
-				    "Failed to add delete preamble container");
+	for (i = 0; i < activity->num_actions; i++) {
+		action = &activity->actions[i];
+
+		/* XXX fault support */
+
+		if (TLMSP_CFG_PAYLOAD_ENABLED(&action->send)) {
+			demo_conn_log(5, conn, "Applying '%s' action",
+			    action->send.reply ? "reply" : "send");
+			send_conn = action->send.reply ?
+			    outbound_conn_for_replies : outbound_conn;
+			if (sends && replies)
+				reply_filter = action->send.reply;
+			else if (sends)
+				reply_filter = false;
+			else
+				reply_filter = true;
+			if (!demo_activity_queue_payload(send_conn,
+				reply_filter, &action->send,
+				match_groups, activity->present))
+				return (false);
+		} else if (action->renegotiate) {
+			if (!SSL_renegotiate_abbreviated(conn->ssl)) {
+				demo_conn_print_error_ssl_errq(conn,
+				    "Failed to schedule a renegotiation");
 				return (false);
 			}
-			if (!container_queue_add(write_q, container)) {
-				demo_conn_print_error(log_conn,
-				    "Failed to add preamble container to write queue");
-				return (false);
-			}
-			container = container_queue_head(read_q);
 		}
 	}
+
+	return (true);
+}
+
+static bool
+demo_activity_drop_or_forward_match_preamble(struct demo_connection *log_conn,
+    struct container_queue *read_q, struct container_queue *write_q,
+    struct container_queue_range *match_range, bool drop)
+{
+	SSL *read_q_ssl = read_q->conn->ssl;
+	TLMSP_Container *container, *new_container;
+	const uint8_t *src;
 	
+	if (drop)
+		demo_conn_log(5, log_conn, "Drop match preamble");
+	else
+		demo_conn_log(5, log_conn, "Forward match preamble");
+
 	/*
-	 * Delete or forward all containers in the queue until we reach the
-	 * match range end.
+	 * Drop or forward all containers ahead of the first match
+	 * container.
 	 */
 	container = container_queue_head(read_q);
-	while (container != match_range->last->container) {
+	while (container != match_range->first->container) {
 		container_queue_remove_head(read_q);
-		if (drop_all) {
+		demo_conn_log(5, log_conn, "%s preamble container "
+		    "(context=%u, length=%zu)",
+		    drop ? "Freeing" : "Forwarding",
+		    TLMSP_container_context(container),
+		    TLMSP_container_length(container));
+		if (drop)
+			TLMSP_container_free(read_q_ssl, container);
+		else if (!container_queue_add(write_q, container)) {
+			demo_conn_print_error(log_conn,
+			    "Failed to add preamble container to write queue");
+			return (false);
+		}
+		container = container_queue_head(read_q);
+	}
+
+	/*
+	 * If the match does not cover the entire first match container,
+	 * remove the preamble data, possibly forwarding it.
+	 */
+	if (match_range->first_offset != 0) {
+		container = container_queue_remove_head(read_q);
+		src = TLMSP_container_get_data(container); 
+
+		/*
+		 * Create a new container with the preamble data removed.
+		 */
+		if (!TLMSP_container_create(read_q_ssl, &new_container,
+			TLMSP_container_context(container),
+			&src[match_range->first_offset],
+			TLMSP_container_length(container) -
+			match_range->first_offset)) {
+			demo_conn_print_error_ssl_errq(log_conn,
+				    "Failed to create new container without "
+			    "match preamble data");
+			return (false);
+		}
+		
+		if (drop) {
 			demo_conn_log(5, log_conn, "Freeing preamble/match "
 			    "container (context=%u, length=%zu)",
 			    TLMSP_container_context(container),
 			    TLMSP_container_length(container));
-			TLMSP_container_free(write_q_ssl, container);
+			TLMSP_container_free(read_q_ssl, container);
 		} else {
-			/* deleting or forwarding */
-			if (delete_match) {
-				demo_conn_log(5, log_conn, "Deleting preamble/match "
-				    "container (context=%u, length=%zu)",
-				    TLMSP_container_context(container),
-				    TLMSP_container_length(container));
-				if (!TLMSP_container_delete(write_q_ssl, container)) {
-					demo_conn_print_error_ssl_errq(log_conn,
-					    "Failed to add delete preamble/match container");
-					return (false);
-				}
+			/*
+			 * Modify container so it only has the preamble data
+			 * in it and forward it.
+			 */
+			TLMSP_container_set_data(container, src,
+			    match_range->first_offset);
+			if (!container_queue_add(write_q, container)) {
+				demo_conn_print_error(log_conn,
+				    "Failed to add modified container with "
+				    "preamble data to outbound write queue");
+				return (false);
+			}
+		}
+
+		/*
+		 * Add the new container that does not contain the preamble
+		 * data to the head of the queue and adjust the match range
+		 * to begin with it.
+		 */
+		container_queue_remove_head(read_q);
+		demo_conn_log(5, log_conn, "Adding first match container "
+		    "with preamble data stripped back to head of read queue "
+		    "(context=%u, length=%zu)",
+		    TLMSP_container_context(new_container),
+		    TLMSP_container_length(new_container));
+		container_queue_add_head(read_q, new_container);
+		match_range->first = container_queue_head_entry(read_q);
+		match_range->first_offset = 0;
+	}
+
+	/*
+	 * match_range->first_offset is always zero at this point.
+	 */
+	return (true);
+}
+
+static bool
+demo_activity_drop_or_delete_match(struct demo_connection *log_conn,
+    struct container_queue *read_q, struct container_queue *write_q,
+    struct container_queue_range *match_range, bool drop)
+{
+	SSL *read_q_ssl = read_q->conn->ssl;
+	TLMSP_Container *container;
+	const uint8_t *src;
+	size_t delete_bytes;
+	
+	demo_conn_log(5, log_conn, "Drop all to end of match");
+
+	/*
+	 * At this point, the head of the read queue contains match data
+	 * beginning with the first byte in the container.  Drop or delete
+	 * all containers in the queue that consist only of match data.
+	 */
+	container = container_queue_head(read_q);
+	while ((container != NULL) &&
+	      ((container != match_range->last->container) ||
+		  (match_range->last_remainder == 0))) {
+		container_queue_remove_head(read_q);
+		if (drop) {
+			demo_conn_log(5, log_conn, "Freeing match container "
+			    "(context=%u, length=%zu)",
+			    TLMSP_container_context(container),
+			    TLMSP_container_length(container));
+			TLMSP_container_free(read_q_ssl, container);
+		} else {
+			demo_conn_log(5, log_conn, "Deleting match container "
+			    "(context=%u, length=%zu)",
+			    TLMSP_container_context(container),
+			    TLMSP_container_length(container));
+			if (!TLMSP_container_delete(read_q_ssl, container)) {
+				demo_conn_print_error_ssl_errq(log_conn,
+				    "Failed to delete match container");
+				return (false);
 			}
 			if (!container_queue_add(write_q, container)) {
 				demo_conn_print_error(log_conn,
-				    "Failed to add preamble/match container to write queue");
+				    "Failed to add deleted match container to "
+				    "write queue");
 				return (false);
 			}
-			demo_conn_log(2, log_conn, "Queued forwarded premable/match "
-			    "container (length=%u) in context %u",
-			    TLMSP_container_length(container),
-			    TLMSP_container_context(container));
 		}
+		if (container == match_range->last->container)
+			break;
 		container = container_queue_head(read_q);
 	}
 
 	/*
-	 * If the match does not cover the entire last container, split it
-	 * into two containers at the match boundary and delete or forward
-	 * the matched part, leaving the rest of the data in the queue for
-	 * future matching.
+	 * If the match does not cover the entire last container, remove the
+	 * match data from that container, leaving the rest in the queue.
 	 */
-
 	if (match_range->last_remainder != 0) {
-		entry = container_queue_head_entry(read_q);
-		container = entry->container;
-		delete_or_forward_bytes = TLMSP_container_length(container) -
-		    match_range->last_remainder;
-		if (!drop_all && !delete_match) {
-			if (!TLMSP_container_create(write_q_ssl,
-				&new_container,
-				TLMSP_container_context(container),
-				TLMSP_container_get_data(container),
-				delete_or_forward_bytes)) {
-				demo_conn_print_error_ssl_errq(log_conn,
-				    "Failed to create new container for tail "
-				    "end of match data");
-				return (false);
-			}
-			if (!container_queue_add(write_q, new_container)) {
-				demo_conn_print_error(log_conn,
-				    "Failed to add new container for tail end "
-				    "of match data to write queue");
-				return (false);
-			}
-			demo_conn_log(2, log_conn, "Queued partial match data "
-			    "container (length=%u) in context %u",
-			    TLMSP_container_length(new_container),
-			    TLMSP_container_context(new_container));
-		}
-		/* remove leading data on container staying in queue */
-		src = TLMSP_container_get_data(container); 
-		TLMSP_container_set_data(container, &src[delete_or_forward_bytes],
+		demo_conn_log(5, log_conn, "Modifying last match container to "
+		    "contain only post-match tail data (context=%u, length=%zu)",
+		    TLMSP_container_context(container),
 		    match_range->last_remainder);
-		entry->length = match_range->last_remainder;
-		read_q->length -= delete_or_forward_bytes;
-	} else {
 		container = container_queue_remove_head(read_q);
-		if (drop_all) {
-			demo_conn_log(5, log_conn, "Freeing final match container "
-			    "(context=%u, length=%zu)",
-			    TLMSP_container_context(container),
-			    TLMSP_container_length(container));
-			TLMSP_container_free(write_q_ssl, container);
-		} else {
-			if (delete_match) {
-				demo_conn_log(5, log_conn, "Deleting final match container "
-				    "(context=%u, length=%zu)",
-				    TLMSP_container_context(container),
-				    TLMSP_container_length(container));
-				if (!TLMSP_container_delete(write_q_ssl, container)) {
-					demo_conn_print_error_ssl_errq(log_conn,
-					    "Failed to delete complete container for "
-					    "tail end of match data");
-					return (false);
-				}
-			}
-			if (!container_queue_add(write_q, container)) {
-				demo_conn_print_error(log_conn,
-				    "Failed to add complete container for tail end of "
-				    "match data to write queue");
-				return (false);
-			}
-			demo_conn_log(2, log_conn, "Queued forwarded final match data "
-			    "container (length=%u) in context %u",
-			    TLMSP_container_length(container),
-			    TLMSP_container_context(container));
+		src = TLMSP_container_get_data(container);
+		delete_bytes = TLMSP_container_length(container) -
+		    match_range->last_remainder;
+		TLMSP_container_set_data(container, &src[delete_bytes],
+		    match_range->last_remainder);
+		if (!container_queue_add_head(read_q, container)) {
+			demo_conn_print_error(log_conn,
+			    "Failed to add modified container with post-match "
+			    "tail data back to head of queue");
+			return (false);
 		}
 	}
 

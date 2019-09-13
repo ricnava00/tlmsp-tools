@@ -39,7 +39,8 @@ activity {
 
     # match { }
     # [required] A match can either be time, container, or data
-    # pattern triggered.
+    # pattern triggered.  Container and pattern matches consume the
+    # matched containers/data.
     match {
         # at = <ms>
         # Time in milliseconds from connection established to trigger
@@ -72,21 +73,18 @@ activity {
     }
 
     # action { }
-    # [required] An action can affect the matched data (or containers)
-    # as well as produce new data in either direction.
+    # [required] An action produces new data (in either direction in
+    # the case of middleboxes).  An empty action block can be used to
+    # cause the match details to be logged.
     action {
-        # send-before | send-replace | send-after | reply {
+        #   'send'  - On an endpoint, send the given data.  On a
+        #             middlebox, send the given data in the same
+        #             direction that the match occurred.
+        #   'reply' - On an endpoint, this is the same as send. On a
+        #             middlebox, send the given data in the opposite
+        #             direction that the match occurred.
         #
-        #    'send-before'  - send new data prior to forwarding the
-        #                     (transformed) matched data
-        #    'send-replace' - transform the matched data before
-        #                     forwarding it
-        #    'send-after'   - send new data after forwarding the
-        #                     (transformed) matched data
-        #    'reply'        - send new data in the other direction. This
-        #                     only has meaning for middleboxes. For the
-        #                     client and server, there is only 'send'.
-        #
+        # send | reply {
         #   context = <id> | <tag>
         #   Which context to send the data in
         #
@@ -104,11 +102,14 @@ activity {
         #   match regex.
         # }
         # 
-        send-after {
+        send {
             context = 2
             data = "ping"
         }
     }
+
+    # present  = yes | no | true | false
+    # [optional] Present the match and action details in the log
 }
 
 activity {
@@ -170,13 +171,13 @@ server {
     address = tlmsp://server_hostname:port
 
     # cert-file = <filename>
-    # [optional, default: 'cert.pem'] Server certificate file to use.
-    cert-file = cert.pem
+    # [optional, default: 'server-cert.pem'] Server certificate file to use.
+    cert-file = server-cert.pem
 
     # cert-key-file = <filename>
-    # [optional, default: 'key.pem'] Server certificate private key
+    # [optional, default: 'server-key.pem'] Server certificate private key
     # file to use.
-    cert-key-file = key.pem
+    cert-key-file = server-key.pem
 
     # function
     # [optional, see 'client' block for details]
@@ -213,12 +214,19 @@ middlebox {
     transparent = no
 
     # discovered = yes | no | true | false
-    # [optional, default: no] When no | false, the client will insert
-    # this middlebox into the ClientHello.  When yes | true, if the
-    # middlebox is transparent, it will insert itself into the
-    # ClientHello, otherwise if the middlebox is not transparent, the
-    # server will insert it into the ServerHello.
+    # [optional, default: no] When no | false, and transparent is also
+    # no | false, the client will insert this middlebox into the
+    # ClientHello.  When yes | true, and transparent is also yes |
+    # true, the middlebox will insert itself into the ClientHello,
+    # otherwise if transparent is no | false, the server will insert
+    # it into the ServerHello.
     discovered = no
+
+    # forbidden = yes | no | true | false
+    # [optional, default: no] When yes | true, the server will reject
+    # the middlebox by marking it forbidden in the returned middlebox
+    # list.
+    forbidden = no
 
     # context { }
     # [required] At least one context block is required

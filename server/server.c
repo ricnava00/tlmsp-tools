@@ -29,6 +29,7 @@
 #include <libdemo/activity.h>
 #include <libdemo/app.h>
 #include <libdemo/connection.h>
+#include <libdemo/pki.h>
 #include <libdemo/print.h>
 #include <libdemo/signal.h>
 
@@ -40,25 +41,27 @@
 
 
 enum {
-	OPT_CONFIG_FILE = 'c',
-	OPT_ERROR_FILE  = 'e',
-	OPT_HELP        = 'h',
-	OPT_REFLECT     = 'r',
-	OPT_STREAM_API  = 's',
-	OPT_VERBOSE     = 'v'
+	OPT_CONFIG_FILE    = 'c',
+	OPT_ERROR_FILE     = 'e',
+	OPT_HELP           = 'h',
+	OPT_PRESENTATION   = 'P',
+	OPT_PORT_SHIFT     = 'p',
+	OPT_REFLECT        = 'r',
+	OPT_STREAM_API     = 's',
+	OPT_VERBOSE        = 'v'
 };
 
 
 static void usage(bool is_error);
 static void show_server_info_cb(void *app_data);
 static struct server_state *new_server(struct ev_loop *loop,
-                                       const char *cfg_file,
-                                       bool reflect, bool use_stream_api);
+                                       const char *cfg_file, bool reflect,
+                                       bool use_stream_api,
+                                       bool force_presentation, int port_shift);
 static void free_server_cb(void *app_data);
 static void accept_cb(EV_P_ ev_io *w, int revents);
 static bool new_connection(struct server_state *server, int sock);
-static int discovery_check_and_edit(SSL *ssl, int unused,
-                                    TLMSP_Middleboxes *middleboxes, void *arg);
+static int discovery_check_and_edit(SSL *ssl, void *arg);
 static void free_connection_cb(void *app_data);
 static void connection_died(struct demo_connection *conn);
 static void conn_cb(EV_P_ ev_io *w, int revents);
@@ -68,12 +71,14 @@ static bool write_containers(struct demo_connection *conn);
 
 static struct option options[] =
 {
-	{"config",     required_argument, 0, OPT_CONFIG_FILE},
-	{"help",       no_argument,       0, OPT_HELP},
-	{"errors",     required_argument, 0, OPT_ERROR_FILE},
-	{"reflect",    no_argument,       0, OPT_REFLECT},
-	{"stream-api", no_argument,       0, OPT_STREAM_API},
-	{"verbose",    no_argument,       0, OPT_VERBOSE},
+	{"config",         required_argument, 0, OPT_CONFIG_FILE},
+	{"errors",         required_argument, 0, OPT_ERROR_FILE},
+	{"help",           no_argument,       0, OPT_HELP},
+	{"port-shift",     required_argument, 0, OPT_PORT_SHIFT},
+	{"presentation",   no_argument,       0, OPT_PRESENTATION},
+	{"reflect",        no_argument,       0, OPT_REFLECT},
+	{"stream-api",     no_argument,       0, OPT_STREAM_API},
+	{"verbose",        no_argument,       0, OPT_VERBOSE},
 	{NULL, 0, NULL, 0}
 };
 
@@ -92,6 +97,8 @@ usage(bool is_error)
 	dprintf(fd, "  -e <file>, --errors <file>  Send error messages to file (- means stdout). List\n");
 	dprintf(fd, "                              first to redirect all errors [default: stderr]\n");
 	dprintf(fd, "  -h, --help                  Print this message\n");
+	dprintf(fd, "  -P, --presentation          Force presentation of activities\n");
+	dprintf(fd, "  -p, --port-shift <delta>    Shift all port numbers in configuration by this amount [default: 0]\n");
 	dprintf(fd, "  -r, --reflect               Send everything received back to the client [default: respond per config file]\n");
 	dprintf(fd, "  -s, --stream-api            Use stream read/write API [default: container API]\n");
 	dprintf(fd, "  -v, --verbose               Raise verbosity level by one [default: 0]\n");
@@ -112,7 +119,7 @@ show_server_info_cb(void *app_data)
 
 static struct server_state *
 new_server(struct ev_loop *loop, const char *cfg_file, bool reflect,
-    bool use_stream_api)
+    bool use_stream_api, bool force_presentation, int port_shift)
 {
 	struct server_state *server;
 	struct demo_app *app;
@@ -127,7 +134,7 @@ new_server(struct ev_loop *loop, const char *cfg_file, bool reflect,
 	}
 
 	app = demo_app_create(false, free_server_cb, show_server_info_cb,
-	    server, 0, cfg_file);
+	    server, 0, cfg_file, force_presentation);
 	if (app == NULL) {
 		free(server);
 		return (NULL);
@@ -138,6 +145,7 @@ new_server(struct ev_loop *loop, const char *cfg_file, bool reflect,
 	cfg = server->cfg;
 	demo_log_msg(1, "Creating server '%s'", cfg->address);
 	server->loop = loop;
+	server->port_shift = port_shift;
 	server->reflect = reflect;
 	server->use_stream_api = use_stream_api;
 	server->accept_batch_limit = 16;
@@ -146,7 +154,8 @@ new_server(struct ev_loop *loop, const char *cfg_file, bool reflect,
 	server->listen_addr =
 	    tlmsp_util_address_to_sockaddr(TLMSP_UTIL_ADDRESS_UNKNOWN,
 		(uint8_t *)cfg->address, strlen(cfg->address), &addr_len,
-		server->app->errbuf, sizeof(server->app->errbuf));
+		server->port_shift, server->app->errbuf,
+		sizeof(server->app->errbuf));
 	if (server->listen_addr == NULL) {
 		demo_print_error("Could not convert server address '%s' to "
 		    "sockaddr: %s", cfg->address, server->app->errbuf);
@@ -166,24 +175,9 @@ new_server(struct ev_loop *loop, const char *cfg_file, bool reflect,
 		demo_print_error_ssl_errq("Failed to enable temporary DH keys");
 		goto error;
 	}
-	if (SSL_CTX_use_certificate_file(server->ssl_ctx, cfg->cert_file,
-		SSL_FILETYPE_PEM) != 1) {
-		demo_print_error_ssl_errq("Failed to load certificate file '%s'",
-		    cfg->cert_file);
+	if (!demo_pki_set_key_and_certificate(server->ssl_ctx,
+		cfg->cert_key_file, cfg->cert_file))
 		goto error;
-	}
-	if (SSL_CTX_use_PrivateKey_file(server->ssl_ctx, cfg->cert_key_file,
-		SSL_FILETYPE_PEM) != 1) {
-		demo_print_error_ssl_errq("Failed to load certificate key file '%s'",
-			cfg->cert_key_file);
-		goto error;
-	}
-	/* XXX This may already be checked during key load */
-        if (!SSL_CTX_check_private_key(server->ssl_ctx)) {
-		demo_print_error_ssl_errq(
-		    "Certificate private key does not match the public key");
-		goto error;
-        }
 
 	server->listen_socket = socket(server->listen_addr->sa_family,
 	    SOCK_STREAM | SOCK_NONBLOCK, 0);
@@ -284,7 +278,7 @@ new_connection(struct server_state *server, int sock)
 
 	/*
 	 * The maximum amount of new application data from an SSL_read()
-	 * TLMSP_CONTAINER_MAX_SIZE less the minimum overhead of a
+	 * is TLMSP_CONTAINER_MAX_SIZE less the minimum overhead of a
 	 * container.
 	 */
 	conn_state->read_buffer_size = TLMSP_CONTAINER_MAX_SIZE;
@@ -294,17 +288,14 @@ new_connection(struct server_state *server, int sock)
 		goto error;
 	}
 
-	/*
-	 * Discovery responses are handled based entirely on the config file
-	 * contents, so we can set the callback at the SSL_CTX level.
-	 */
-	TLMSP_set_discovery_cb(server->ssl_ctx, discovery_check_and_edit,
-	    server);
-
 	if (!demo_connection_init_io(conn, server->ssl_ctx, sock, server->loop,
 		(demo_connection_failed_cb_t)connection_died, conn_cb, EV_READ))
 		goto error;
 	SSL_set_accept_state(conn->ssl);
+
+	TLMSP_set_discovery_cb_instance(conn->ssl, discovery_check_and_edit,
+	    conn);
+
 	demo_connection_start_io(conn);
 
 	return (conn_state);
@@ -323,92 +314,22 @@ free_connection_cb(void *app_data)
 }
 
 int
-discovery_check_and_edit(SSL *ssl, int unused, TLMSP_Middleboxes *middleboxes,
-    void *arg)
+discovery_check_and_edit(SSL *ssl, void *arg)
 {
-	struct server_state *server = arg;
-	TLMSP_Middlebox *mb;
-	const struct tlmsp_cfg_middlebox *cfg_mb;
-	struct tlmsp_middlebox_configuration tmc;
-	unsigned int i;
-	int address_type;
-	uint8_t *address;
-	size_t address_len;
-	char *address_string;
+	struct demo_connection *conn = arg;
+	TLMSP_Middleboxes *middleboxes;
+	int result;
 
-	/*
-	 * Walk the middlebox list, checking that the contents are as
-	 * expected per the config file and inserting non-transparent
-	 * middleboxes from the config file that are marked as discovered.
-	 * The current logic assumes that the client is working straight
-	 * from the config file and isn't doing any sort of middlebox list
-	 * caching from prior connections.
-	 */
-	mb = TLMSP_middleboxes_first(middleboxes);
-	for (i = 0; i < server->app->cfg->num_middleboxes; i++) {
-		cfg_mb = &server->app->cfg->middleboxes[i];
-
-		if (cfg_mb->discovered && !cfg_mb->transparent) {
-			TLMSP_ContextAccess *contexts = NULL;
-
-			/*
-			 * Insert this config file middlebox before the
-			 * current discovery list entry.
-			 */
-			contexts = tlmsp_cfg_middlebox_contexts_to_openssl(cfg_mb);
-			if (contexts == NULL)
-				return (0);
-			address_type = tlmsp_util_address_type(cfg_mb->address);
-			if (address_type == TLMSP_UTIL_ADDRESS_UNKNOWN) {
-				TLMSP_context_access_free(contexts);
-				return (0);
-			}
-			tmc.address_type = address_type;
-			tmc.address = cfg_mb->address;
-			tmc.transparent = cfg_mb->transparent;
-			tmc.contexts = contexts;
-			tmc.ca_file_or_dir = NULL;
-			if (!TLMSP_middleboxes_insert_before(middleboxes, mb, &tmc)) {
-				return (0);
-			}
-		} else {
-			const TLMSP_ContextAccess *contexts = NULL;
-
-			if (!TLMSP_get_middlebox_address(mb, &address_type, &address, &address_len))
-				return (0);
-			address_string = malloc(address_len + 1);
-			if (address_string == NULL) {
-				OPENSSL_free(address);
-				return (0);
-			}
-			memcpy(address_string, address, address_len);
-			OPENSSL_free(address);
-			address_string[address_len] = '\0';
-
-			/*
-			 * Check that the current discovery list entry
-			 * matches the current config file entry.
-			 * 
-			 * XXX Could use memcmp and avoid the extra allocation.
-			 */
-			if (strcmp(address_string, cfg_mb->address) != 0) {
-				free(address_string);
-				return (0);
-			}
-			free(address_string);
-			contexts = TLMSP_middlebox_context_access(mb);
-			if (!tlmsp_cfg_middlebox_contexts_match_openssl(cfg_mb,
-				contexts)) {
-				return (0);
-			}
-
-			mb = TLMSP_middleboxes_next(middleboxes, mb);
-		}
-	}
-	if (mb != NULL)
+	middleboxes = TLMSP_get_middleboxes_instance(conn->ssl);
+	if (middleboxes == NULL)
 		return (0);
-
-	return (1);
+	result = tlmsp_cfg_process_middlebox_list_server_openssl(conn->app->cfg,
+	    middleboxes);
+	/* assume there were edits */
+	if (!TLMSP_set_middleboxes_instance(conn->ssl, middleboxes))
+		result = 0;
+	TLMSP_middleboxes_free(middleboxes);
+	return (result);
 }
 
 static void
@@ -427,7 +348,7 @@ conn_cb(EV_P_ ev_io *w, int revents)
 	struct demo_connection *conn = w->data;
 	bool pending_writes;
 	
-	demo_connection_stop_io(conn);
+	demo_connection_pause_io(conn);
 	demo_connection_events_arrived(conn, revents);
 
 	/*
@@ -556,9 +477,8 @@ read_containers(struct demo_connection *conn)
 		return (result);
 	}
 
-	demo_conn_log_buf(3, conn, "Container data",
-	    TLMSP_container_get_data(container),
-	    TLMSP_container_length(container), true);
+	demo_conn_log_buf(3, conn, TLMSP_container_get_data(container),
+	    TLMSP_container_length(container), true, "Container data");
 	
 	if (server->reflect) {
 		container = container_queue_remove_head(&conn->read_queue);
@@ -598,9 +518,8 @@ write_containers(struct demo_connection *conn)
 		    "in context %u using %s API",
 		    TLMSP_container_length(container), context_id,
 		    server->use_stream_api ? "stream" : "container");
-		demo_conn_log_buf(3, conn, "Container data",
-		    TLMSP_container_get_data(container),
-		    TLMSP_container_length(container), true);
+		demo_conn_log_buf(3, conn, TLMSP_container_get_data(container),
+		    TLMSP_container_length(container), true, "Container data");
 		if (server->use_stream_api) {
 			if (!TLMSP_set_current_context(ssl, context_id)) {
 				demo_conn_print_error(conn,
@@ -651,6 +570,8 @@ int main(int argc, char **argv)
 	int opt_index;
 	int opt_code;
 	const char *cfg_file;
+	int port_shift;
+	bool force_presentation;
 	bool has_config;
 	bool reflect;
 	bool use_stream_api;
@@ -665,13 +586,15 @@ int main(int argc, char **argv)
 	demo_pid = getpid();
 	demo_signal_handling_init();
 
+	port_shift = 0;
+	force_presentation = false;
 	has_config = false;
 	reflect = false;
 	use_stream_api = false;
 	opterr = 0; /* prevent getopt from printing its own error messages */
 	for (;;) {
 		opt_index = 0;
-		opt_code = getopt_long(argc, argv, ":c:e:hrsv", options,
+		opt_code = getopt_long(argc, argv, ":c:e:hPp:rsv", options,
 		    &opt_index);
 
 		if (opt_code == -1)
@@ -696,6 +619,12 @@ int main(int argc, char **argv)
 				}
 			}
 			break;
+		case OPT_PORT_SHIFT:
+			port_shift = strtol(optarg, NULL, 10);
+			break;
+		case OPT_PRESENTATION:
+			force_presentation = true;
+			break;
 		case OPT_REFLECT:
 			reflect = true;
 			break;
@@ -713,7 +642,7 @@ int main(int argc, char **argv)
 			    argv[optind - 1]);
 			usage(true);
 		case '?':
-			demo_print_error("Unknown option %s", argv[optind]);
+			demo_print_error("Unknown option %s", argv[optind - 1]);
 			usage(true);
 			break;
 		default:
@@ -735,7 +664,8 @@ int main(int argc, char **argv)
 	
 	loop = ev_default_loop(EVFLAG_AUTO);
 
-	single_server = new_server(loop, cfg_file, reflect, use_stream_api);
+	single_server = new_server(loop, cfg_file, reflect, use_stream_api,
+	    force_presentation, port_shift);
 	if (single_server == NULL)
 	{
 		demo_print_error("Failed to create new server");

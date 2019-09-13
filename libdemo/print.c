@@ -35,28 +35,30 @@
 
 
 #define BUF_PRINT_BYTES_PER_LINE	16
-#define BUF_PRINT_BYTE_LIMIT			(20 * BUF_PRINT_BYTES_PER_LINE)
+#define BUF_PRINT_BYTE_LIMIT		(20 * BUF_PRINT_BYTES_PER_LINE)
 
 
 static void demo_conn_print_ssl_errq(struct demo_connection *conn);
 static void demo_base_print_preamble(int fd);
 static void demo_base_print(int fd, const char *fmt, ...);
 static void demo_base_vprint(int fd, const char *fmt, va_list ap);
-static void demo_conn_base_print_preamble(struct demo_connection *conn, int fd);
+static void demo_conn_base_print_preamble(struct demo_connection *conn, int fd,
+                                          bool present);
 static void demo_conn_base_print(struct demo_connection *conn, int fd,
-                            const char *fmt, ...);
+                                 bool present, const char *fmt, ...);
 static void demo_conn_base_vprint(struct demo_connection *conn, int fd,
-                             const char *fmt, va_list ap);
+                                  bool present, const char *fmt, va_list ap);
 static void demo_base_print_sockaddr(int fd, const char *msg,
                                      struct sockaddr *sa);
 static void demo_conn_base_print_sockaddr(struct demo_connection *conn, int fd,
-                                     const char *msg, struct sockaddr *sa);
+                                          const char *msg, struct sockaddr *sa);
 static void demo_sockaddr_to_string(struct sockaddr *sa, char *buf, size_t len);
-static void demo_base_print_buf(int fd, const char *msg, const uint8_t *buf,
-                                size_t len, bool limit);
-static void demo_conn_base_print_buf(struct demo_connection *conn, int fd,
-                                     const char *msg, const uint8_t *buf,
-                                     size_t len, bool limit);
+static void demo_base_vprint_buf(int fd, const uint8_t *buf, size_t len,
+                                 bool limit, const char *fmt, va_list ap);
+static void demo_conn_base_vprint_buf(struct demo_connection *conn, int fd,
+                                      bool present, const uint8_t *buf,
+                                      size_t len, bool limit, bool alongside,
+                                      const char *fmt, va_list ap);
 static void demo_buf_to_line_string(char *line_string, size_t line_string_len,
                                     const uint8_t *buf, size_t len);
 static const char *demo_ssl_error_str(int ssl_error);
@@ -87,7 +89,7 @@ demo_conn_print_errno(struct demo_connection *conn, const char *fmt, ...)
 	int errnum = errno;
 
 	va_start(ap, fmt);
-	demo_conn_base_vprint(conn, demo_error_fd, fmt, ap);
+	demo_conn_base_vprint(conn, demo_error_fd, false, fmt, ap);
 	va_end(ap);
 	dprintf(demo_error_fd, ": %s\n", strerror(errnum));
 }
@@ -133,7 +135,7 @@ demo_conn_print_error(struct demo_connection *conn, const char *fmt, ...)
 	va_list ap;
 
 	va_start(ap, fmt);
-	demo_conn_base_vprint(conn, demo_error_fd, fmt, ap);
+	demo_conn_base_vprint(conn, demo_error_fd, false, fmt, ap);
 	va_end(ap);
 	dprintf(demo_error_fd, "\n");
 }
@@ -146,13 +148,13 @@ demo_conn_print_error_ssl(struct demo_connection *conn, int ssl_error,
 	int errnum = errno;
 
 	va_start(ap, fmt);
-	demo_conn_base_vprint(conn, demo_error_fd, fmt, ap);
+	demo_conn_base_vprint(conn, demo_error_fd, false, fmt, ap);
 	va_end(ap);
 	dprintf(demo_error_fd, "\n");
-	demo_conn_base_print(conn, demo_error_fd, "    ssl error %s\n",
+	demo_conn_base_print(conn, demo_error_fd, false, "    ssl error %s\n",
 	    demo_ssl_error_str(ssl_error));
 	if (ssl_error == SSL_ERROR_SYSCALL) {
-		demo_conn_base_print(conn, demo_error_fd, "    errno: %s\n",
+		demo_conn_base_print(conn, demo_error_fd, false, "    errno: %s\n",
 		    strerror(errnum));
 	}
 	if ((ssl_error == SSL_ERROR_SYSCALL) || (ssl_error == SSL_ERROR_SSL)) {
@@ -167,7 +169,7 @@ demo_conn_print_error_ssl_errq(struct demo_connection *conn, const char *fmt,
 	va_list ap;
 
 	va_start(ap, fmt);
-	demo_conn_base_vprint(conn, demo_error_fd, fmt, ap);
+	demo_conn_base_vprint(conn, demo_error_fd, false, fmt, ap);
 	va_end(ap);
 	dprintf(demo_error_fd, "\n");
 	demo_conn_print_ssl_errq(conn);
@@ -187,13 +189,13 @@ demo_conn_print_ssl_errq(struct demo_connection *conn)
 		    &flags)) != 0) {
 		num_ssl_errors++;
 		ERR_error_string_n(ssl_error, buf, sizeof(buf));
-		demo_conn_base_print(conn, demo_error_fd,
+		demo_conn_base_print(conn, demo_error_fd, false,
 		    "    openssl %s:%s:%d%s%s\n", buf, file, line,
 		    (flags & ERR_TXT_STRING) ? ":" : "",
 		    (flags & ERR_TXT_STRING) ? data : "");
 	}
 	if (num_ssl_errors == 0) {
-		demo_conn_base_print(conn, demo_error_fd,
+		demo_conn_base_print(conn, demo_error_fd, false,
 		    "    The openssl error queue is empty\n");
 	}
 }
@@ -236,7 +238,7 @@ demo_conn_log(unsigned int level, struct demo_connection *conn, const char *fmt,
 
 	if (demo_verbose >= level) {
 		va_start(ap, fmt);
-		demo_conn_base_vprint(conn, STDOUT_FILENO, fmt, ap);
+		demo_conn_base_vprint(conn, STDOUT_FILENO, false, fmt, ap);
 		va_end(ap);
 		dprintf(STDOUT_FILENO, "\n");
 	}
@@ -264,22 +266,30 @@ demo_conn_log_sockaddr(unsigned int level, struct demo_connection *conn,
 }
 
 void
-demo_log_buf(unsigned int level, const char *msg, const uint8_t *buf, size_t len,
-	bool limit)
+demo_log_buf(unsigned int level, const uint8_t *buf, size_t len,
+    bool limit, const char *fmt, ...)
 {
+	va_list ap;
 
-	if (demo_verbose >= level)
-		demo_base_print_buf(STDOUT_FILENO, msg, buf, len, limit);
+	if (demo_verbose >= level) {
+		va_start(ap, fmt);
+		demo_base_vprint_buf(STDOUT_FILENO, buf, len, limit, fmt, ap);
+		va_end(ap);
+	}
 }
 
 void
 demo_conn_log_buf(unsigned int level, struct demo_connection *conn,
-    const char *msg, const uint8_t *buf, size_t len, bool limit)
+    const uint8_t *buf, size_t len, bool limit, const char *fmt, ...)
 {
+	va_list ap;
 
-	if (demo_verbose >= level)
-		demo_conn_base_print_buf(conn, STDOUT_FILENO, msg, buf, len,
-		    limit);
+	if (demo_verbose >= level) {
+		va_start(ap, fmt);
+		demo_conn_base_vprint_buf(conn, STDOUT_FILENO, false, buf, len,
+		    limit, false, fmt, ap);
+		va_end(ap);
+	}
 }
 
 static void
@@ -312,20 +322,18 @@ demo_base_vprint(int fd, const char *fmt, va_list ap)
 }
 
 static void
-demo_conn_base_print_preamble(struct demo_connection *conn, int fd)
+demo_conn_base_print_preamble(struct demo_connection *conn, int fd, bool present)
 {
 
 	if (conn->splice != NULL) {
 		if (demo_tag != NULL) {
-			dprintf(fd, "%s[%d:%s]: splice %" PRIu64 " (%s)[%s]: ",
+			dprintf(fd, "%s[%d:%s]: splice %" PRIu64 " (%s): ",
 			    demo_progname, demo_pid, demo_tag, conn->splice->id,
-			    conn->to_client ? "client<-" : "->server",
-			    demo_connection_phase_to_str(conn->phase));
+			    conn->to_client ? "client-side" : "server-side");
 		} else {
-			dprintf(fd, "%s[%d]: splice %" PRIu64 " (%s)[%s]: ",
+			dprintf(fd, "%s[%d]: splice %" PRIu64 " (%s): ",
 			    demo_progname, demo_pid, conn->splice->id,
-			    conn->to_client ? "client<-" : "->server",
-			    demo_connection_phase_to_str(conn->phase));
+			    conn->to_client ? "client-side" : "server-side");
 		}
 	} else {
 		if (demo_tag != NULL) {
@@ -339,22 +347,23 @@ demo_conn_base_print_preamble(struct demo_connection *conn, int fd)
 }
 
 static void
-demo_conn_base_print(struct demo_connection *conn, int fd, const char *fmt, ...)
+demo_conn_base_print(struct demo_connection *conn, int fd, bool present,
+    const char *fmt, ...)
 {
 	va_list ap;
 
-	demo_conn_base_print_preamble(conn, fd);
+	demo_conn_base_print_preamble(conn, fd, present);
 	va_start(ap, fmt);
 	vdprintf(fd, fmt, ap);
 	va_end(ap);
 }
 
 static void
-demo_conn_base_vprint(struct demo_connection *conn, int fd, const char *fmt,
-    va_list ap)
+demo_conn_base_vprint(struct demo_connection *conn, int fd, bool present,
+    const char *fmt, va_list ap)
 {
 
-	demo_conn_base_print_preamble(conn, fd);
+	demo_conn_base_print_preamble(conn, fd, present);
 	vdprintf(fd, fmt, ap);
 }
 
@@ -374,7 +383,7 @@ demo_conn_base_print_sockaddr(struct demo_connection *conn, int fd,
 	char buf[INET6_ADDRSTRLEN + 16];
 
 	demo_sockaddr_to_string(sa, buf, sizeof(buf));
-	demo_conn_base_print(conn, fd, "%s%s", msg, buf);
+	demo_conn_base_print(conn, fd, false, "%s%s", msg, buf);
 }
 
 static void
@@ -404,9 +413,32 @@ demo_sockaddr_to_string(struct sockaddr *sa, char *str, size_t len)
 	}
 }
 
+void
+demo_conn_present(struct demo_connection *conn, const char *fmt, ...)
+{
+	va_list ap;
+
+	va_start(ap, fmt);
+	demo_conn_base_vprint(conn, STDOUT_FILENO, true, fmt, ap);
+	va_end(ap);
+	dprintf(STDOUT_FILENO, "\n");
+}
+
+void
+demo_conn_present_buf(struct demo_connection *conn, const uint8_t *buf,
+    size_t len, bool limit, const char *fmt, ...)
+{
+	va_list ap;
+
+	va_start(ap, fmt);
+	demo_conn_base_vprint_buf(conn, STDOUT_FILENO, true, buf, len, limit,
+	    true, fmt, ap);
+	va_end(ap);
+}
+
 static void
-demo_base_print_buf(int fd, const char *msg, const uint8_t *buf, size_t len,
-    bool limit)
+demo_base_vprint_buf(int fd, const uint8_t *buf, size_t len, bool limit,
+    const char *fmt, va_list ap)
 {
 	char line_string[BUF_PRINT_BYTES_PER_LINE * 3 + BUF_PRINT_BYTES_PER_LINE + 2 + 1];
 	size_t offset;
@@ -424,10 +456,11 @@ demo_base_print_buf(int fd, const char *msg, const uint8_t *buf, size_t len,
 	full_lines = len / BUF_PRINT_BYTES_PER_LINE;
 	remainder = len % BUF_PRINT_BYTES_PER_LINE;
 
+	demo_base_vprint(fd, fmt, ap);
 	if (limited)
-		demo_base_print(fd, "%s (truncated to %zu bytes): \n", msg, len);
+		dprintf(fd, " (truncated to %zu bytes): \n", len);
 	else
-		demo_base_print(fd, "%s: \n", msg);
+		dprintf(fd, ": \n");
 	offset = 0;
 	for (i = 0; i < full_lines; i++) {
 		demo_buf_to_line_string(line_string, sizeof(line_string),
@@ -435,7 +468,7 @@ demo_base_print_buf(int fd, const char *msg, const uint8_t *buf, size_t len,
 		demo_base_print(fd, "%s\n", line_string);
 		offset += BUF_PRINT_BYTES_PER_LINE;
 	}
-	if (remainder > 0) {
+	if ((remainder > 0) || (full_lines == 0)) {
 		demo_buf_to_line_string(line_string, sizeof(line_string),
 		    &buf[offset], remainder);
 		demo_base_print(fd, "%s\n", line_string);
@@ -443,8 +476,9 @@ demo_base_print_buf(int fd, const char *msg, const uint8_t *buf, size_t len,
 }
 
 static void
-demo_conn_base_print_buf(struct demo_connection *conn, int fd, const char *msg,
-    const uint8_t *buf, size_t len, bool limit)
+demo_conn_base_vprint_buf(struct demo_connection *conn, int fd, bool present,
+    const uint8_t *buf, size_t len, bool limit, bool alongside, const char *fmt,
+    va_list ap)
 {
 	char line_string[BUF_PRINT_BYTES_PER_LINE * 3 + BUF_PRINT_BYTES_PER_LINE + 2 + 1];
 	size_t offset;
@@ -462,22 +496,38 @@ demo_conn_base_print_buf(struct demo_connection *conn, int fd, const char *msg,
 	full_lines = len / BUF_PRINT_BYTES_PER_LINE;
 	remainder = len % BUF_PRINT_BYTES_PER_LINE;
 
-	if (limited)
-		demo_conn_base_print(conn, fd, "%s (truncated to %zu bytes): \n",
-		    msg, len);
-	else
-		demo_conn_base_print(conn, fd, "%s: \n", msg);
+	if (!alongside) {
+		demo_conn_base_vprint(conn, fd, present, fmt, ap);
+		if (limited)
+			dprintf(fd, " (truncated to %zu bytes): \n", len);
+		else
+			dprintf(fd, ": \n");
+	}
 	offset = 0;
 	for (i = 0; i < full_lines; i++) {
 		demo_buf_to_line_string(line_string, sizeof(line_string),
 		    &buf[offset], BUF_PRINT_BYTES_PER_LINE);
-		demo_conn_base_print(conn, fd, "%s\n", line_string);
+		demo_conn_base_print(conn, fd, present, "%s", line_string);
+		if ((i == 0) && alongside) {
+			dprintf(fd, " ");
+			vdprintf(fd, fmt, ap);
+			if (limited)
+				dprintf(fd, " (truncated to %zu bytes)", len);
+		}
+		dprintf(fd, "\n");
 		offset += BUF_PRINT_BYTES_PER_LINE;
 	}
-	if (remainder > 0) {
+	if ((remainder > 0) || (full_lines == 0)) {
 		demo_buf_to_line_string(line_string, sizeof(line_string),
 		    &buf[offset], remainder);
-		demo_conn_base_print(conn, fd, "%s\n", line_string);
+		demo_conn_base_print(conn, fd, present, "%s", line_string);
+		if (alongside) {
+			dprintf(fd, " ");
+			vdprintf(fd, fmt, ap);
+			if (limited)
+				dprintf(fd, " (truncated to %zu bytes)", len);
+		}
+		dprintf(fd, "\n");
 	}
 }
 

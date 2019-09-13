@@ -37,6 +37,7 @@ struct server_state {
 	const struct tlmsp_cfg_server *cfg;
 	SSL_CTX *ssl_ctx;
 	struct sockaddr *listen_addr;
+	int port_shift;
 	bool reflect;
 	bool use_stream_api;
 	unsigned int accept_batch_limit;

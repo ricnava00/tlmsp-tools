@@ -37,6 +37,7 @@ struct client_state {
 	struct demo_app *app;
 	const struct tlmsp_cfg_client *cfg;
 	SSL_CTX *ssl_ctx;
+	int port_shift;
 	bool use_stream_api;
 	uint64_t connection_counter;
 };

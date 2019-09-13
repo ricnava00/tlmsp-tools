@@ -1,0 +1,31 @@
+context {
+    id = 1
+    tag = context-1
+}
+
+# This middlebox will be the first entry in the client's middlebox
+# list both before and after discovery, so the client does not have to
+# reconnect to issue the second ClientHello.
+middlebox {
+    tag = mbox1
+    address = tlmsp://localhost:10002
+    transparent = no
+    discovered = no
+}
+
+# This middlebox will be added by the server, so the first middlebox
+# will have to reconnect when processing the second ClientHello.
+middlebox {
+    tag = mbox2
+    address = tlmsp://localhost:10003
+    transparent = no
+    discovered = yes
+}
+
+client {
+    address = tlmsp://localhost
+}
+
+server {
+    address = tlmsp://localhost:10254
+}

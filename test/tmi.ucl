@@ -1,0 +1,46 @@
+# One context
+context {
+    id = 1
+    tag = context-1
+}
+
+activity {
+    tag = information
+
+    match {
+	at = 0
+    }
+
+    action {
+        send {
+            context = context-1
+            data = "information"
+        }
+    }
+}
+
+activity {
+    tag = more-information
+
+    match {
+        which = *
+        data = "information"
+    }
+
+    action {
+        send {
+            context = context-1
+            template = "${0}${0}"
+        }
+    }
+}
+
+client {
+    address = tlmsp://localhost
+    function = [ information, more-information ]
+}
+
+server {
+    address = tlmsp://localhost:10254
+    function = more-information
+}

@@ -77,6 +77,18 @@ tlmsp_cfg_print(int fd, const struct tlmsp_cfg *cfg)
 	indent_print(fd, 0, "}\n");
 }
 
+const struct tlmsp_cfg_context *
+tlmsp_cfg_get_context_by_tag(const struct tlmsp_cfg *cfg, const char *tag)
+{
+	unsigned int i;
+
+	for (i = 0; i < cfg->num_contexts; i++)
+		if (strcmp(cfg->contexts[i].tag, tag) == 0)
+			return (&cfg->contexts[i]);
+
+	return (NULL);
+}
+
 const struct tlmsp_cfg_middlebox *
 tlmsp_cfg_get_next_middlebox(const struct tlmsp_cfg *cfg,
     const struct tlmsp_cfg_middlebox *mb)
@@ -113,6 +125,52 @@ tlmsp_cfg_get_middlebox_by_tag(const struct tlmsp_cfg *cfg, const char *tag)
 	return (NULL);
 }
 
+char *
+tlmsp_cfg_get_client_first_hop_address(const struct tlmsp_cfg *cfg,
+    bool reconnect, bool emulated_transparency, int *address_type)
+{
+	const struct tlmsp_cfg_middlebox *mb;
+	const char *address = NULL;
+	unsigned int i;
+
+	/*
+	 * Under emulated transparency, middleboxes that are marked
+	 * transparent are always considered as they must always be
+	 * connected to at the transport level, even prior to being
+	 * 'discovered'.
+	 *
+	 * When reconnect is true, discovered non-transparent middleboxes
+	 * are also considered.
+	 */
+	for (i = 0; i < cfg->num_middleboxes; i++) {
+		mb = &cfg->middleboxes[i];
+
+		/*
+		 * If the middlebox is marked discovered, only consider it
+		 * if reconnect is true or it is also marked transparent and
+		 * emulated_transparency is enabled.
+		 */
+		if (mb->discovered &&
+		    !(reconnect || (mb->transparent && emulated_transparency)))
+			continue;
+
+		/*
+		 * If the middlebox is marked transparent, only consider it
+		 * if emulated_transparency is enabled.
+		 */
+		if (mb->transparent && !emulated_transparency)
+			continue;
+
+		address = mb->address;
+		break;
+	}
+	if (address == NULL)
+		address = cfg->server.address;
+
+	*address_type = tlmsp_util_address_type(address);
+	return (strdup(address));
+}
+
 TLMSP_Contexts *
 tlmsp_cfg_contexts_to_openssl(const struct tlmsp_cfg *cfg)
 {
@@ -137,14 +195,14 @@ tlmsp_cfg_contexts_to_openssl(const struct tlmsp_cfg *cfg)
 	return (tlmsp_contexts);
 }
 
-TLMSP_ContextAccess *
-tlmsp_cfg_middlebox_contexts_to_openssl(const struct tlmsp_cfg_middlebox *mb)
+bool
+tlmsp_cfg_middlebox_contexts_to_openssl(const struct tlmsp_cfg_middlebox *mb, TLMSP_ContextAccess **ca)
 {
-	TLMSP_ContextAccess *tlmsp_contexts_access = NULL;
 	struct tlmsp_cfg_middlebox_context *mb_context;
 	unsigned int i;
 	tlmsp_context_auth_t auth;
 
+	*ca = NULL;
 	for (i = 0; i < mb->num_contexts; i++) {
 		mb_context = &mb->contexts[i];
 
@@ -156,14 +214,59 @@ tlmsp_cfg_middlebox_contexts_to_openssl(const struct tlmsp_cfg_middlebox *mb)
 		} else {
 			auth = TLMSP_CONTEXT_AUTH_READ;
 		}
-		if (!TLMSP_context_access_add(&tlmsp_contexts_access,
-			mb_context->base->id, auth)) {
-			TLMSP_context_access_free(tlmsp_contexts_access);
-			return (NULL);
+		if (!TLMSP_context_access_add(ca, mb_context->base->id, auth)) {
+			TLMSP_context_access_free(*ca);
+			return (false);
 		}
 	}
 
-	return (tlmsp_contexts_access);
+	return (true);
+}
+
+TLMSP_Middleboxes *
+tlmsp_cfg_initial_middlebox_list_to_openssl(const struct tlmsp_cfg*cfg)
+{
+	TLMSP_Middleboxes *tlmsp_middleboxes = NULL;
+	struct tlmsp_cfg_middlebox *cfg_middlebox;
+	TLMSP_ContextAccess *contexts_access;
+	struct tlmsp_middlebox_configuration tmc;
+	int address_type;
+	unsigned int i;
+
+	for (i = 0; i < cfg->num_middleboxes; i++) {
+		cfg_middlebox = &cfg->middleboxes[i];
+
+		if (cfg_middlebox->discovered)
+			continue;
+
+		/*
+		 * Build context access list
+		 */
+		if (!tlmsp_cfg_middlebox_contexts_to_openssl(
+			cfg_middlebox, &contexts_access))
+			goto error;
+
+		address_type = tlmsp_util_address_type(cfg_middlebox->address);
+		if (address_type == TLMSP_UTIL_ADDRESS_UNKNOWN)
+			goto error;
+		
+		tmc.address_type = address_type;
+		tmc.address = cfg_middlebox->address;
+		tmc.transparent = cfg_middlebox->transparent;
+		tmc.contexts = contexts_access;
+		tmc.ca_file_or_dir = NULL;
+		if (!TLMSP_middlebox_add(&tlmsp_middleboxes, &tmc))
+			goto error;
+		TLMSP_context_access_free(contexts_access);
+		contexts_access = NULL;
+	}
+
+	return (tlmsp_middleboxes);
+error:
+	/* TLSMP free API points are NULL-safe */
+	TLMSP_context_access_free(contexts_access);
+	TLMSP_middleboxes_free(tlmsp_middleboxes);
+	return (NULL);
 }
 
 bool
@@ -218,10 +321,156 @@ tlmsp_cfg_middlebox_contexts_match_openssl(const struct tlmsp_cfg_middlebox *mb,
 	return (true);
 }
 
+bool
+tlmsp_cfg_validate_middlebox_list_client_openssl(const struct tlmsp_cfg *cfg,
+    TLMSP_Middleboxes *middleboxes)
+{
+	TLMSP_Middlebox *mb;
+	const struct tlmsp_cfg_middlebox *cfg_mb;
+	const TLMSP_ContextAccess *contexts;
+	uint8_t *address;
+	size_t address_len;
+	char *address_string;
+	int address_type;
+
+	/*
+	 * For each entry in the middlebox list, look up the middlebox
+	 * config if found, validate the access list
+	 */
+	mb = TLMSP_middleboxes_first(middleboxes);
+	while (mb != NULL) {
+		if (!TLMSP_get_middlebox_address(mb, &address_type, &address, &address_len))
+			return (false);
+		address_string = malloc(address_len + 1);
+		if (address_string == NULL) {
+			OPENSSL_free(address);
+			return (false);
+		}
+		memcpy(address_string, address, address_len);
+		OPENSSL_free(address);
+		address_string[address_len] = '\0';
+
+		cfg_mb = tlmsp_cfg_get_middlebox_by_address(cfg, address_string);
+		if (cfg_mb == NULL) {
+			free(address_string);
+			return (false);
+		}
+		free(address_string);
+
+		contexts = TLMSP_middlebox_context_access(mb);
+		if (!tlmsp_cfg_middlebox_contexts_match_openssl(cfg_mb,
+			contexts)) {
+			return (false);
+		}
+
+		mb = TLMSP_middleboxes_next(middleboxes, mb);
+	}
+
+	return (true);
+}
+
+bool
+tlmsp_cfg_process_middlebox_list_server_openssl(const struct tlmsp_cfg *cfg,
+    TLMSP_Middleboxes *middleboxes)
+{
+	TLMSP_Middlebox *mb;
+	const struct tlmsp_cfg_middlebox *cfg_mb;
+	struct tlmsp_middlebox_configuration tmc;
+	unsigned int i;
+	int address_type;
+	uint8_t *address;
+	size_t address_len;
+	char *address_string;
+
+	/*
+	 * Walk the middlebox list, checking that the contents are as
+	 * expected per the config file, inserting non-transparent
+	 * middleboxes from the config file that are marked as discovered,
+	 * and forbidding middleboxes that are marked as forbidden.  The
+	 * current logic assumes that the client is working straight from
+	 * the config file and isn't doing any sort of middlebox list
+	 * caching from prior connections (i.e. there will not be any
+	 * middlebox list contents not described in the config file).
+	 */
+	mb = TLMSP_middleboxes_first(middleboxes);
+	for (i = 0; i < cfg->num_middleboxes; i++) {
+		cfg_mb = &cfg->middleboxes[i];
+
+		if (cfg_mb->discovered && !cfg_mb->transparent) {
+			TLMSP_ContextAccess *contexts = NULL;
+
+			/*
+			 * Insert this config file middlebox before the
+			 * current discovery list entry.
+			 */
+			if (!tlmsp_cfg_middlebox_contexts_to_openssl(cfg_mb,
+				&contexts))
+				return (false);
+			address_type = tlmsp_util_address_type(cfg_mb->address);
+			if (address_type == TLMSP_UTIL_ADDRESS_UNKNOWN) {
+				TLMSP_context_access_free(contexts);
+				return (false);
+			}
+			tmc.address_type = address_type;
+			tmc.address = cfg_mb->address;
+			tmc.transparent = cfg_mb->transparent;
+			tmc.contexts = contexts;
+			tmc.ca_file_or_dir = NULL;
+			if (!TLMSP_middleboxes_insert_before(middleboxes, mb, &tmc)) {
+				return (false);
+			}
+		} else if (mb != NULL) {
+			const TLMSP_ContextAccess *contexts = NULL;
+
+			if (!TLMSP_get_middlebox_address(mb, &address_type, &address, &address_len))
+				return (false);
+
+			address_string = malloc(address_len + 1);
+			if (address_string == NULL) {
+				OPENSSL_free(address);
+				return (false);
+			}
+			memcpy(address_string, address, address_len);
+
+			OPENSSL_free(address);
+			address_string[address_len] = '\0';
+
+			/*
+			 * Check that the current discovery list entry
+			 * matches the current config file entry.
+			 * 
+			 * XXX Could use memcmp and avoid the extra allocation.
+			 */
+			if (strcmp(address_string, cfg_mb->address) != 0) {
+				free(address_string);
+				return (false);
+			}
+			free(address_string);
+
+			if (cfg_mb->forbidden) {
+				if (!TLMSP_middlebox_forbid(mb))
+					return (false);
+			} else {
+				contexts = TLMSP_middlebox_context_access(mb);
+				if (!tlmsp_cfg_middlebox_contexts_match_openssl(cfg_mb,
+					contexts)) {
+					return (false);
+				}
+			}
+			mb = TLMSP_middleboxes_next(middleboxes, mb);
+		} else
+			return (false);
+	}
+	if ((mb != NULL) || (i != cfg->num_middleboxes))
+		return (false);
+
+	return (true);
+}
+
 void
 tlmsp_cfg_free(const struct tlmsp_cfg *cfg)
 {
-	unsigned int i;
+	unsigned int i, j;
 	struct tlmsp_cfg_context *context;
 	struct tlmsp_cfg_activity *activity;
 	struct tlmsp_cfg_match *match;
@@ -267,10 +516,8 @@ tlmsp_cfg_free(const struct tlmsp_cfg *cfg)
 			free_string(match->pattern.param.s);
 			break;
 		}
-		tlmsp_cfg_free_payload(&activity->action.after);
-		tlmsp_cfg_free_payload(&activity->action.before);
-		tlmsp_cfg_free_payload(&activity->action.replace);
-		tlmsp_cfg_free_payload(&activity->action.reply);
+		for (j = 0; j < activity->num_actions; j++)
+			tlmsp_cfg_free_payload(&activity->actions[j].send);
 	}
 	free(cfg->activities);
 

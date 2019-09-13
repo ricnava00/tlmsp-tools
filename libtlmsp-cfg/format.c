@@ -242,9 +242,9 @@ const struct value_type cfg_format =
                                        KEY("data", STRING(ACTIVITY_MATCH_DATA)),
                                        KEY("file", STRING(ACTIVITY_MATCH_FILE)),
                                        KEY("regex", STRING(ACTIVITY_MATCH_REGEX)))),
-                           KEY("action", 
-                                OBJECT(ACTIVITY_ACTION,
-#if notyet
+                           KEY("action",
+                                OBJECT_ARRAY(ACTIVITY_ACTION,
+#ifdef notyet
                                        KEY("fault",
                                             ENUM(ACTIVITY_ACTION_FAULT,
                                                  { "corrupt-data",   TLMSP_CFG_ACTION_FAULT_CORRUPT_DATA },
@@ -253,47 +253,21 @@ const struct value_type cfg_format =
                                                  { "drop",           TLMSP_CFG_ACTION_FAULT_DROP },
                                                  { "reorder",        TLMSP_CFG_ACTION_FAULT_REORDER } )),
 #endif
-                                       KEY("send-after",
-                                            OBJECT(ACTIVITY_ACTION_SEND_AFTER,
+                                       KEY("send",
+                                            OBJECT_ARRAY(ACTIVITY_ACTION_SEND,
                                                    KEY("context",
-                                                        INT_RANGE(ACTIVITY_ACTION_SEND_AFTER_CONTEXT_ID,
+                                                        INT_RANGE(ACTIVITY_ACTION_SEND_CONTEXT_ID,
                                                                   TLMSP_CONTEXT_ID_MIN,
                                                                   TLMSP_CONTEXT_ID_MAX),
-                                                        STRING(ACTIVITY_ACTION_SEND_AFTER_CONTEXT_TAG)),
-                                                   KEY("data", STRING(ACTIVITY_ACTION_SEND_AFTER_DATA)),
-                                                   KEY("file", STRING(ACTIVITY_ACTION_SEND_AFTER_FILE)),
+                                                        STRING(ACTIVITY_ACTION_SEND_CONTEXT_TAG)),
+                                                   KEY("data", STRING(ACTIVITY_ACTION_SEND_DATA)),
+                                                   KEY("file", STRING(ACTIVITY_ACTION_SEND_FILE)),
 #ifdef notyet
-                                                   KEY("handler", STRING(ACTIVITY_ACTION_SEND_AFTER_HANDLER)),
+                                                   KEY("handler", STRING(ACTIVITY_ACTION_SEND_HANDLER)),
 #endif
-                                                   KEY("template", STRING(ACTIVITY_ACTION_SEND_AFTER_TEMPLATE)))),
-                                       KEY("send-before",
-                                            OBJECT(ACTIVITY_ACTION_SEND_BEFORE,
-                                                   KEY("context",
-                                                        INT_RANGE(ACTIVITY_ACTION_SEND_BEFORE_CONTEXT_ID,
-                                                                  TLMSP_CONTEXT_ID_MIN,
-                                                                  TLMSP_CONTEXT_ID_MAX),
-                                                        STRING(ACTIVITY_ACTION_SEND_BEFORE_CONTEXT_TAG)),
-                                                   KEY("data", STRING(ACTIVITY_ACTION_SEND_BEFORE_DATA)),
-                                                   KEY("file", STRING(ACTIVITY_ACTION_SEND_BEFORE_FILE)),
-#ifdef notyet
-                                                   KEY("handler", STRING(ACTIVITY_ACTION_SEND_BEFORE_HANDLER)),
-#endif
-                                                   KEY("template", STRING(ACTIVITY_ACTION_SEND_BEFORE_TEMPLATE)))),
-                                       KEY("send-replace",
-                                            OBJECT(ACTIVITY_ACTION_SEND_REPLACE,
-                                                   KEY("context",
-                                                        INT_RANGE(ACTIVITY_ACTION_SEND_REPLACE_CONTEXT_ID,
-                                                                  TLMSP_CONTEXT_ID_MIN,
-                                                                  TLMSP_CONTEXT_ID_MAX),
-                                                        STRING(ACTIVITY_ACTION_SEND_REPLACE_CONTEXT_TAG)),
-                                                   KEY("data", STRING(ACTIVITY_ACTION_SEND_REPLACE_DATA)),
-                                                   KEY("file", STRING(ACTIVITY_ACTION_SEND_REPLACE_FILE)),
-#ifdef notyet
-                                                   KEY("handler", STRING(ACTIVITY_ACTION_SEND_REPLACE_HANDLER)),
-#endif
-                                                   KEY("template", STRING(ACTIVITY_ACTION_SEND_REPLACE_TEMPLATE)))),
+                                                   KEY("template", STRING(ACTIVITY_ACTION_SEND_TEMPLATE)))),
                                        KEY("reply",
-                                            OBJECT(ACTIVITY_ACTION_REPLY,
+                                            OBJECT_ARRAY(ACTIVITY_ACTION_REPLY,
                                                    KEY("context",
                                                         INT_RANGE(ACTIVITY_ACTION_REPLY_CONTEXT_ID,
                                                                   TLMSP_CONTEXT_ID_MIN,
@@ -304,7 +278,9 @@ const struct value_type cfg_format =
 #ifdef notyet
                                                    KEY("handler", STRING(ACTIVITY_ACTION_REPLY_HANDLER)),
 #endif
-                                                   KEY("template", STRING(ACTIVITY_ACTION_REPLY_TEMPLATE)))))))),
+						KEY("template", STRING(ACTIVITY_ACTION_REPLY_TEMPLATE)))),
+                                        KEY("renegotiate", BOOLEAN(ACTIVITY_ACTION_RENEGOTIATE)))),
+                           KEY("present", BOOLEAN(ACTIVITY_PRESENT)))),
          KEY("client",
               OBJECT(CLIENT,
                      KEY("version",
@@ -341,6 +317,7 @@ const struct value_type cfg_format =
                            KEY("cert-key-file", STRING(MIDDLEBOX_CERT_KEY_FILE)),
                            KEY("transparent", BOOLEAN(MIDDLEBOX_TRANSPARENT)),
                            KEY("discovered", BOOLEAN(MIDDLEBOX_DISCOVERED)),
+                           KEY("forbidden", BOOLEAN(MIDDLEBOX_FORBIDDEN)),
                            KEY("context",
                                 OBJECT_ARRAY(MIDDLEBOX_CONTEXT,
                                              KEY("which",
@@ -953,27 +930,14 @@ fmt_value_tag_name(enum value_tag tag)
 		HANDLE(VALUE_TAG_ACTIVITY_MATCH_REGEX);
 		HANDLE(VALUE_TAG_ACTIVITY_ACTION);
 		HANDLE(VALUE_TAG_ACTIVITY_ACTION_FAULT);
-		HANDLE(VALUE_TAG_ACTIVITY_ACTION_SEND_AFTER);
-		HANDLE(VALUE_TAG_ACTIVITY_ACTION_SEND_AFTER_CONTEXT_ID);
-		HANDLE(VALUE_TAG_ACTIVITY_ACTION_SEND_AFTER_CONTEXT_TAG);
-		HANDLE(VALUE_TAG_ACTIVITY_ACTION_SEND_AFTER_DATA);
-		HANDLE(VALUE_TAG_ACTIVITY_ACTION_SEND_AFTER_FILE);
-		HANDLE(VALUE_TAG_ACTIVITY_ACTION_SEND_AFTER_HANDLER);
-		HANDLE(VALUE_TAG_ACTIVITY_ACTION_SEND_AFTER_TEMPLATE);
-		HANDLE(VALUE_TAG_ACTIVITY_ACTION_SEND_BEFORE);
-		HANDLE(VALUE_TAG_ACTIVITY_ACTION_SEND_BEFORE_CONTEXT_ID);
-		HANDLE(VALUE_TAG_ACTIVITY_ACTION_SEND_BEFORE_CONTEXT_TAG);
-		HANDLE(VALUE_TAG_ACTIVITY_ACTION_SEND_BEFORE_DATA);
-		HANDLE(VALUE_TAG_ACTIVITY_ACTION_SEND_BEFORE_FILE);
-		HANDLE(VALUE_TAG_ACTIVITY_ACTION_SEND_BEFORE_HANDLER);
-		HANDLE(VALUE_TAG_ACTIVITY_ACTION_SEND_BEFORE_TEMPLATE);
-		HANDLE(VALUE_TAG_ACTIVITY_ACTION_SEND_REPLACE);
-		HANDLE(VALUE_TAG_ACTIVITY_ACTION_SEND_REPLACE_CONTEXT_ID);
-		HANDLE(VALUE_TAG_ACTIVITY_ACTION_SEND_REPLACE_CONTEXT_TAG);
-		HANDLE(VALUE_TAG_ACTIVITY_ACTION_SEND_REPLACE_DATA);
-		HANDLE(VALUE_TAG_ACTIVITY_ACTION_SEND_REPLACE_FILE);
-		HANDLE(VALUE_TAG_ACTIVITY_ACTION_SEND_REPLACE_HANDLER);
-		HANDLE(VALUE_TAG_ACTIVITY_ACTION_SEND_REPLACE_TEMPLATE);
+		HANDLE(VALUE_TAG_ACTIVITY_ACTION_RENEGOTIATE);
+		HANDLE(VALUE_TAG_ACTIVITY_ACTION_SEND);
+		HANDLE(VALUE_TAG_ACTIVITY_ACTION_SEND_CONTEXT_ID);
+		HANDLE(VALUE_TAG_ACTIVITY_ACTION_SEND_CONTEXT_TAG);
+		HANDLE(VALUE_TAG_ACTIVITY_ACTION_SEND_DATA);
+		HANDLE(VALUE_TAG_ACTIVITY_ACTION_SEND_FILE);
+		HANDLE(VALUE_TAG_ACTIVITY_ACTION_SEND_HANDLER);
+		HANDLE(VALUE_TAG_ACTIVITY_ACTION_SEND_TEMPLATE);
 		HANDLE(VALUE_TAG_ACTIVITY_ACTION_REPLY);
 		HANDLE(VALUE_TAG_ACTIVITY_ACTION_REPLY_CONTEXT_ID);
 		HANDLE(VALUE_TAG_ACTIVITY_ACTION_REPLY_CONTEXT_TAG);
@@ -981,6 +945,7 @@ fmt_value_tag_name(enum value_tag tag)
 		HANDLE(VALUE_TAG_ACTIVITY_ACTION_REPLY_FILE);
 		HANDLE(VALUE_TAG_ACTIVITY_ACTION_REPLY_HANDLER);
 		HANDLE(VALUE_TAG_ACTIVITY_ACTION_REPLY_TEMPLATE);
+		HANDLE(VALUE_TAG_ACTIVITY_PRESENT);
 		HANDLE(VALUE_TAG_CLIENT);
 		HANDLE(VALUE_TAG_CLIENT_VERSION_SINGLE);
 		HANDLE(VALUE_TAG_CLIENT_VERSION_RANGE);
@@ -1010,6 +975,7 @@ fmt_value_tag_name(enum value_tag tag)
 		HANDLE(VALUE_TAG_MIDDLEBOX_CERT_KEY_FILE);
 		HANDLE(VALUE_TAG_MIDDLEBOX_TRANSPARENT);
 		HANDLE(VALUE_TAG_MIDDLEBOX_DISCOVERED);
+		HANDLE(VALUE_TAG_MIDDLEBOX_FORBIDDEN);
 		HANDLE(VALUE_TAG_MIDDLEBOX_CONTEXT);
 		HANDLE(VALUE_TAG_MIDDLEBOX_CONTEXT_WHICH_IDS);
 		HANDLE(VALUE_TAG_MIDDLEBOX_CONTEXT_WHICH_TAGS);

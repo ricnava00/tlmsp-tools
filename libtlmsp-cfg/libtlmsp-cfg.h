@@ -28,6 +28,8 @@
 #define TLMSP_MIDDLEBOX_ID_MIN		3
 #define TLMSP_MIDDLEBOX_ID_MAX		255
 
+#define TLMSP_MAX_MIDDLEBOXES		(TLMSP_MIDDLEBOX_ID_MAX -	\
+					 TLMSP_MIDDLEBOX_ID_MIN + 1)
 
 struct tlmsp_cfg_buf {
 	const uint8_t *p;
@@ -38,6 +40,7 @@ struct tlmsp_cfg_buf {
 #define TLMSP_CFG_MATCH_REF_END		UINT_MAX
 
 struct tlmsp_cfg_payload {
+	bool reply;
 	struct tlmsp_cfg_context *context;
 	enum {
 		TLMSP_CFG_PAYLOAD_NONE,
@@ -106,6 +109,7 @@ struct tlmsp_cfg_activity {
 			} param;
 		} pattern;
 	} match;
+	unsigned int num_actions;
 	struct tlmsp_cfg_action {
 		enum {
 			TLMSP_CFG_ACTION_FAULT_NONE,
@@ -115,11 +119,10 @@ struct tlmsp_cfg_activity {
 			TLMSP_CFG_ACTION_FAULT_DROP,
 			TLMSP_CFG_ACTION_FAULT_REORDER,
 		} fault;
-		struct tlmsp_cfg_payload after;
-		struct tlmsp_cfg_payload before;
-		struct tlmsp_cfg_payload replace;
-		struct tlmsp_cfg_payload reply;
-	} action;
+		bool renegotiate;
+		struct tlmsp_cfg_payload send;
+	} *actions;
+	bool present;
 };
 
 struct tlmsp_cfg_client {
@@ -165,6 +168,7 @@ struct tlmsp_cfg_middlebox {
 	const char *cert_key_file;
 	bool transparent;
 	bool discovered;
+	bool forbidden;
 	unsigned int num_contexts;
 	struct tlmsp_cfg_middlebox_context *contexts;
 	unsigned int num_activities_to_client;
@@ -187,6 +191,8 @@ struct tlmsp_cfg {
 const struct tlmsp_cfg *tlmsp_cfg_parse_file(const char *filename, char *errbuf, size_t buflen);
 const struct tlmsp_cfg *tlmsp_cfg_parse_string(const char *str, char *errbuf, size_t buflen);
 bool tlmsp_cfg_load_match_files(const struct tlmsp_cfg *cfg, char *errbuf, size_t buflen);
+const struct tlmsp_cfg_context *tlmsp_cfg_get_context_by_tag(const struct tlmsp_cfg *cfg,
+                                                             const char *tag);
 const struct tlmsp_cfg_middlebox *tlmsp_cfg_get_next_middlebox(const struct tlmsp_cfg *cfg,
                                                                const struct tlmsp_cfg_middlebox *mb);
 const struct tlmsp_cfg_middlebox *tlmsp_cfg_get_middlebox_by_address(const struct tlmsp_cfg *cfg,
@@ -194,9 +200,18 @@ const struct tlmsp_cfg_middlebox *tlmsp_cfg_get_middlebox_by_address(const struc
 const struct tlmsp_cfg_middlebox *tlmsp_cfg_get_middlebox_by_tag(const struct tlmsp_cfg *cfg,
                                                                  const char *tag);
 
+char *tlmsp_cfg_get_client_first_hop_address(const struct tlmsp_cfg *cfg, bool reconnect,
+                                             bool emulated_transparency, int *address_type);
+
 TLMSP_Contexts *tlmsp_cfg_contexts_to_openssl(const struct tlmsp_cfg *cfg);
-TLMSP_ContextAccess *tlmsp_cfg_middlebox_contexts_to_openssl(const struct tlmsp_cfg_middlebox *mb);
-bool tlmsp_cfg_middlebox_contexts_match_openssl(const struct tlmsp_cfg_middlebox *mb, const TLMSP_ContextAccess *ca);
+bool tlmsp_cfg_middlebox_contexts_to_openssl(const struct tlmsp_cfg_middlebox *mb, TLMSP_ContextAccess **ca);
+TLMSP_Middleboxes *tlmsp_cfg_initial_middlebox_list_to_openssl(const struct tlmsp_cfg*cfg);
+bool tlmsp_cfg_middlebox_contexts_match_openssl(const struct tlmsp_cfg_middlebox *mb,
+                                                const TLMSP_ContextAccess *ca);
+bool tlmsp_cfg_validate_middlebox_list_client_openssl(const struct tlmsp_cfg *cfg,
+                                                      TLMSP_Middleboxes *middleboxes);
+bool tlmsp_cfg_process_middlebox_list_server_openssl(const struct tlmsp_cfg *cfg,
+                                                     TLMSP_Middleboxes *middleboxes);
 
 void tlmsp_cfg_print(int fd, const struct tlmsp_cfg *cfg);
 void tlmsp_cfg_free(const struct tlmsp_cfg *cfg);

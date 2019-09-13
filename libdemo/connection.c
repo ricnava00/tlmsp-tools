@@ -102,26 +102,11 @@ demo_connection_init_io(struct demo_connection *conn, SSL_CTX *ssl_ctx, int sock
 		return (false);
 	}
 
-	/*
-	 * Read queues on endpoints do not have an idle timer,
-	 * but middlebox read queues do.
-	 */
 	container_queue_init(&conn->read_queue, conn,
 	    (conn->splice == NULL) ? 0 : READ_QUEUE_MAX_IDLE_MS,
 	    READ_QUEUE_MAX_DEPTH_BYTES);
 	container_queue_init(&conn->write_queue, conn, 0, 0);
-
-	if (!demo_activity_conn_queue_initial(conn)) {
-		demo_conn_print_error(conn,
-		    "Failed to queue initial send data for write");
-		return (false);
-	}
-
-	if (!demo_activity_conn_set_up_time_triggered(conn)) {
-		demo_conn_print_error(conn,
-		    "Failed to set up time-triggered messages");
-		return (false);
-	}
+	conn->queues_initialized = true;
 
 	ev_io_init(&conn->watcher, cb, conn->socket, conn->wait_events);
 	conn->watcher.data = conn->cb_data;
@@ -164,15 +149,59 @@ demo_conn_connected_cb(EV_P_ ev_io *w, int revents)
 	demo_conn_log_sockaddr(1, conn, "Remote address is ",
 	    (struct sockaddr *)&conn->remote_name);
 
-	if (!demo_activity_conn_start_time_triggered(conn))
-		demo_conn_print_error(conn,
-		    "Failed to start time-triggered messages");
+	/*
+	 * XXX Once the client and server are structured to detect handshake
+	 * complete, this will move to that point in client/server.
+	 */
+	if (!conn->splice)
+		demo_connection_handshake_complete(conn);
 
 	conn->is_connected = true;
 	ev_io_stop(EV_A_ &conn->connected_watcher);
 	ev_io_start(EV_A_ &conn->watcher);
 }
 
+bool
+demo_connection_handshake_complete(struct demo_connection *conn)
+{
+	if (!demo_activity_conn_queue_initial(conn)) {
+		demo_conn_print_error(conn,
+		    "Failed to queue initial send data for write");
+		return (false);
+	}
+
+	if (!demo_activity_conn_set_up_time_triggered(conn)) {
+		demo_conn_print_error(conn,
+		    "Failed to set up time-triggered messages");
+		return (false);
+	}
+
+	if (!demo_activity_conn_start_time_triggered(conn))
+		demo_conn_print_error(conn,
+		    "Failed to start time-triggered messages");
+
+	if (demo_connection_writes_pending(conn))
+		demo_connection_wait_for(conn, EV_WRITE);
+
+	return (true);
+}
+
+/*
+ * To be used to stop the I/O watcher after the connection is established so
+ * that adjustments can be made before demo_connection_resume_io() is
+ * called.
+ */
+void
+demo_connection_pause_io(struct demo_connection *conn)
+{
+	struct ev_loop *loop = conn->loop;
+
+	ev_io_stop(EV_A_ &conn->watcher);
+}
+
+/*
+ * At any point after connection creation, ensure no watchers are running.
+ */
 void
 demo_connection_stop_io(struct demo_connection *conn)
 {
@@ -181,8 +210,10 @@ demo_connection_stop_io(struct demo_connection *conn)
 	if (conn->socket != -1) {
 		if (!conn->is_connected)
 			ev_io_stop(EV_A_ &conn->connected_watcher);
-		else
+		else {
+			conn->is_connected = false;
 			ev_io_stop(EV_A_ &conn->watcher);
+		}
 	}
 }
 
@@ -239,7 +270,7 @@ demo_connection_resume_io(struct demo_connection *conn)
 	struct ev_loop *loop = conn->loop;
 
 	/* assumes watcher is currently stopped */
-	if ((conn->socket != -1) && conn->wait_events) {
+	if (conn->is_connected && conn->wait_events) {
 		ev_io_set(&conn->watcher, conn->socket, conn->wait_events);
 		ev_io_start(EV_A_ &conn->watcher);
 	}
@@ -255,9 +286,11 @@ demo_connection_free(struct demo_connection *conn)
 		demo_app_remove_connection(conn->app, conn);
 	if (conn->free_cb != NULL)
 		conn->free_cb(conn->app_data);
-	
-	container_queue_drain(&conn->read_queue);
-	container_queue_drain(&conn->write_queue);
+
+	if (conn->queues_initialized) {
+		container_queue_drain(&conn->read_queue, NULL);
+		container_queue_drain(&conn->write_queue, NULL);
+	}
 	if (conn->socket != -1)
 		close(conn->socket);
 	if (conn->ssl)
@@ -277,8 +310,8 @@ demo_connection_show_info(struct demo_connection *conn, bool trailing_separator)
 	    (struct sockaddr *)&conn->local_name);
 	demo_conn_print_error_sockaddr(conn, "remote-address: ",
 	    (struct sockaddr *)&conn->remote_name);
-	demo_conn_print_error(conn, "containers-sent    : %12" PRIu64, conn->read_queue.container_counter);
-	demo_conn_print_error(conn, "containers-received: %12" PRIu64, conn->write_queue.container_counter);
+	demo_conn_print_error(conn, "containers-sent    : %12" PRIu64, conn->write_queue.container_counter);
+	demo_conn_print_error(conn, "containers-received: %12" PRIu64, conn->read_queue.container_counter);
 	if (conn->show_info_cb != NULL)
 		conn->show_info_cb(conn->app_data);
 	if (trailing_separator)

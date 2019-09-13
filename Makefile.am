@@ -1,12 +1,11 @@
 SUBDIRS = libucl
 
-# Don't install the local libucl when make install is run
-install installdirs: SUBDIRS := $(filter-out libucl, $(SUBDIRS))
-
 LIBUCL_LDADD = libucl/src/.libs/libucl.a
 
 ACLOCAL_AMFLAGS = -I m4
 AM_CPPFLAGS = \
+	-DLIBDEMO_PKI_DIR=\"$(pki_dir)\" \
+	-DLIBDEMO_PKI_PRIVATE_DIR=\"$(pki_private_dir)\" \
 	-I$(top_srcdir)/libtlmsp-cfg \
 	-I$(top_srcdir)/libtlmsp-util \
 	-I$(top_srcdir)/libucl/include
@@ -46,6 +45,8 @@ libdemo_a_SOURCES = \
 	libdemo/connection.h \
 	libdemo/container_queue.c \
 	libdemo/container_queue.h \
+	libdemo/pki.c \
+	libdemo/pki.h \
 	libdemo/print.c \
 	libdemo/print.h \
 	libdemo/splice.c \
@@ -96,3 +97,11 @@ pkginclude_HEADERS = \
 	libtlmsp-cfg/libtlmsp-cfg.h \
 	libtlmsp-util/libtlmsp-util.h
 
+
+
+install-data-local:
+	$(mkinstalldirs) $(datadir)/examples
+	-for file in $(srcdir)/examples/*.ucl; do \
+		basefile=$$(basename $$file); \
+		$(INSTALL_DATA) $$file $(datadir)/examples/$$basefile; \
+	done

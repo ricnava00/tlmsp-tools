@@ -27,12 +27,13 @@
 
 int tlmsp_util_address_type(const char *address);
 bool tlmsp_util_address_to_host_and_port(int address_type, const uint8_t *address,
-                                         size_t address_len, char **host,
-                                         char **port);
+                                         size_t address_len, int port_shift,
+                                         char **host, char **port);
 struct sockaddr *tlmsp_util_address_to_sockaddr(int address_type,
                                                 const uint8_t *address,
                                                 size_t address_len,
                                                 socklen_t *addr_len,
+                                                int port_shift,
                                                 char *errbuf, size_t errbuf_len);
 
 bool tlmsp_util_load_file(const char *filename, const uint8_t **buf,

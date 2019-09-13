@@ -45,9 +45,11 @@ void container_queue_init(struct container_queue *q, struct demo_connection *con
                           unsigned int max_idle_ms, size_t max_length_bytes);
 bool container_queue_add(struct container_queue *q,
                          TLMSP_Container *container);
+bool container_queue_add_head(struct container_queue *q,
+                              TLMSP_Container *container);
 TLMSP_Container *container_queue_head(struct container_queue *q);
 struct container_queue_entry *container_queue_head_entry(struct container_queue *q);
 TLMSP_Container *container_queue_remove_head(struct container_queue *q);
-void container_queue_drain(struct container_queue *q);
+void container_queue_drain(struct container_queue *q, struct container_queue *to);
 
 #endif /* _LIBDEMO_CONTAINER_QUEUE_H_ */

@@ -6,6 +6,27 @@ LT_INIT
 
 AC_PROG_CC
 
+want_debug=no
+AC_ARG_ENABLE(debug,
+  AC_HELP_STRING([--enable-debug], [Enable debug build options])
+  AC_HELP_STRING([--disable-debug], [Disable debug build options]),
+  [want_debug=$enableval])
+if test "$want_debug" = "yes"; then
+  CFLAGS="$CFLAGS -O0 -g"
+fi
+
+AC_ARG_WITH([pki-dir],
+  [AS_HELP_STRING([--with-pki-dir=DIR], [Directory in which to look for relative-path public PKI files [SYSCONFDIR/pki]])],
+  [],
+  [with_pki_dir='${sysconfdir}/pki'])
+AC_SUBST([pki_dir], [$with_pki_dir])
+
+AC_ARG_WITH([pki-private-dir],
+  [AS_HELP_STRING([--with-pki-private-dir=DIR], [Directory in which to look for relative-path private PKI files [SYSCONFDIR/pki/private]])],
+  [],
+  [with_pki_private_dir='${sysconfdir}/pki/private'])
+AC_SUBST([pki_private_dir], [$with_pki_private_dir])
+
 # Placed before the adjustment of CPPFLAGS to ensure the headers for
 # the version specified on the command line are ahead of any system
 # versions in the include path.

@@ -24,6 +24,7 @@ struct demo_app {
 	void *app_data;
 	const struct tlmsp_cfg *cfg;
 	bool uses_splices;
+	bool force_presentation;
 	unsigned int num_connections;
 	struct demo_connection *connections;
 	unsigned int num_splices;
@@ -39,7 +40,8 @@ struct demo_app {
 struct demo_app *demo_app_create(bool uses_splices, demo_app_free_cb_t free_cb,
                                  demo_app_show_info_cb_t show_info_cb,
                                  void *app_data, uint64_t id,
-                                 const char *config_file);
+                                 const char *config_file,
+                                 bool force_presentation);
 void demo_app_add_connection(struct demo_app *app, struct demo_connection *conn);
 void demo_app_remove_connection(struct demo_app *app, struct demo_connection *conn);
 void demo_app_add_splice(struct demo_app *app, struct demo_splice *splice);

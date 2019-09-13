@@ -69,13 +69,14 @@ tlmsp_util_address_type(const char *address)
 
 bool
 tlmsp_util_address_to_host_and_port(int address_type, const uint8_t *address,
-    size_t address_len, char **host, char **port)
+    size_t address_len, int port_shift, char **host, char **port)
 {
 	char *address_str = NULL;
 	char *protocol_end, *path_slash, *colon;
 	char *host_result = NULL;
 	char *port_result = NULL;
-
+	unsigned long port_value;
+	
 	/* reject addresses that contain '\0' */
 	if (memchr(address, '\0', address_len) != NULL)
 		return (false);
@@ -104,14 +105,37 @@ tlmsp_util_address_to_host_and_port(int address_type, const uint8_t *address,
 			goto error;
 		colon = strrchr(host_result, ':');
 		if (colon != NULL) {
+			char *p;
+
 			*colon = '\0';
-			if (path_slash != NULL)
-				port_result = strndup(colon + 1,
-				    path_slash - colon - 1);
-			else
-				port_result = strdup(colon + 1);
+			port_result = strdup(colon + 1);
 			if (port_result == NULL)
 				goto error;
+			p = port_result;
+			while (*p) {
+				if (!isdigit(*p++))
+					goto error;
+			}
+			port_value = strtoul(port_result, NULL, 10);
+			if ((port_value < 1) || (port_value > 65535))
+				goto error;
+			if (port_shift != 0) {
+				int size;
+
+				port_value += port_shift;
+				if ((port_value < 1) || (port_value > 65535))
+					goto error;
+				free(port_result);
+				port_result = NULL;
+				size = snprintf(NULL, 0, "%lu", port_value);
+				if (size < 0)
+					goto error;
+				port_result = malloc(size + 1);
+				if (port_result == NULL)
+					goto error;
+				if (snprintf(port_result, size + 1, "%lu", port_value) < 0)
+					goto error;				
+			}
 		}
 		break;
 	case TLMSP_UTIL_ADDRESS_FQDN: /* FALLTHROUGH */
@@ -122,7 +146,7 @@ tlmsp_util_address_to_host_and_port(int address_type, const uint8_t *address,
 			goto error;
 		break;
 	default:
-		return (false);
+		goto error;
 	}
 	free(address_str);
 
@@ -148,7 +172,8 @@ error:
 
 struct sockaddr *
 tlmsp_util_address_to_sockaddr(int address_type, const uint8_t *address,
-    size_t address_len, socklen_t *addr_len, char *errbuf, size_t errbuf_len)
+    size_t address_len, socklen_t *addr_len, int port_shift, char *errbuf,
+    size_t errbuf_len)
 {
 	char *host, *port;
 	struct addrinfo hints;
@@ -158,7 +183,7 @@ tlmsp_util_address_to_sockaddr(int address_type, const uint8_t *address,
 	struct sockaddr *result;
 
 	if (!tlmsp_util_address_to_host_and_port(address_type, address,
-		address_len, &host,& port))
+		address_len, port_shift, &host, &port))
 	{
 		if (errbuf != NULL)
 			snprintf(errbuf, errbuf_len,

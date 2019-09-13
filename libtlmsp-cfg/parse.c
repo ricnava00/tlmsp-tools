@@ -81,6 +81,7 @@ struct iteration_state {
 	struct tlmsp_cfg *cfg;
 	struct tlmsp_cfg_context *cur_context;
 	struct tlmsp_cfg_activity *cur_activity;
+	struct tlmsp_cfg_action *cur_action;
 	struct tlmsp_cfg_middlebox *cur_middlebox;
 	struct tlmsp_cfg_middlebox_context *cur_middlebox_context;
 	struct tlmsp_cfg_middlebox_context *first_middlebox_context;
@@ -90,6 +91,7 @@ struct iteration_state {
 	struct object *cur_obj;
 	struct auto_array_state context_array;
 	struct auto_array_state activity_array;
+	struct auto_array_state activity_action_array;
 	struct activity_list activity_list_to_client;
 	struct activity_list activity_list_to_server;
 	struct context_list match_context_list;
@@ -189,9 +191,9 @@ static bool percent_encoded_string_to_buf(const char *str, uint8_t **buf,
 static void initialize_cfg_middlebox(struct tlmsp_cfg_middlebox *cfg);
 static bool add_middlebox_context(struct iteration_state *state);
 static void initialize_cfg_middlebox_context(struct tlmsp_cfg_middlebox_context *cfg);
-static bool check_cfg_middlebox_activity_access(struct iteration_state *state,
-                                                struct tlmsp_cfg_middlebox *cfg,
-                                                struct tlmsp_cfg_activity *activity);
+static bool check_cfg_middlebox_activity(struct iteration_state *state,
+                                         struct tlmsp_cfg_middlebox *cfg,
+                                         struct tlmsp_cfg_activity *activity);
 static void copy_cfg_middlebox_context(struct tlmsp_cfg_middlebox_context *dest,
                                        struct tlmsp_cfg_middlebox_context *src);
 static bool add_context_ptr_to_array(struct auto_array_state *s,
@@ -499,6 +501,9 @@ handle_value_tag_start_do(struct iteration_state *state, enum value_tag tag,
 		state->cur_activity = &cfg->activities[cfg->num_activities];
 		cfg->num_activities++;
 		initialize_cfg_activity(state->cur_activity);
+		auto_array_state_init(&state->activity_action_array,
+		    (void **)&state->cur_activity->actions,
+		    sizeof(*state->cur_activity->actions));
 		break;
         case VALUE_TAG_ACTIVITY_TAG:
 		/* nothing to do */
@@ -533,84 +538,53 @@ handle_value_tag_start_do(struct iteration_state *state, enum value_tag tag,
 		/* nothing to do */
 		break;
         case VALUE_TAG_ACTIVITY_ACTION:
-		if (!check_one_tag(state, tag, "action", "activity"))
-			return (false);
 		if (!HAS_VALUE_TAG(ACTIVITY_MATCH)) {
 			ERRBUF("'match' must appear before 'action'");
 			return (false);
 		}
 		break;
         case VALUE_TAG_ACTIVITY_ACTION_FAULT:
-		if (!check_one_tag(state, tag, "fault", "action"))
+	case VALUE_TAG_ACTIVITY_ACTION_RENEGOTIATE:
+        case VALUE_TAG_ACTIVITY_ACTION_SEND:
+	case VALUE_TAG_ACTIVITY_ACTION_REPLY:
+		if ((tag == VALUE_TAG_ACTIVITY_ACTION_FAULT) &&
+		    !check_one_tag(state, tag, "fault", "action"))
 			return (false);
-		break;
-        case VALUE_TAG_ACTIVITY_ACTION_SEND_AFTER:
-		if (!check_one_tag(state, tag, "send-after", "action"))
+		if ((tag == VALUE_TAG_ACTIVITY_ACTION_RENEGOTIATE) &&
+		    !check_one_tag(state, tag, "renegotiate", "action"))
 			return (false);
-		break;
-        case VALUE_TAG_ACTIVITY_ACTION_SEND_AFTER_CONTEXT_ID:
-	case VALUE_TAG_ACTIVITY_ACTION_SEND_AFTER_CONTEXT_TAG:
-		/* nothing to do */
-		break;
-	case VALUE_TAG_ACTIVITY_ACTION_SEND_AFTER_DATA:
-        case VALUE_TAG_ACTIVITY_ACTION_SEND_AFTER_FILE:
-	case VALUE_TAG_ACTIVITY_ACTION_SEND_AFTER_HANDLER:
-        case VALUE_TAG_ACTIVITY_ACTION_SEND_AFTER_TEMPLATE:
-		if (state->cur_activity->action.after.type != TLMSP_CFG_PAYLOAD_NONE) {
-			ERRBUF("only one data source per payload specification is supported");
+		if (!auto_array_one_more(&state->activity_action_array)) {
+			ERRBUF("failed to allocate more space in activity action array");
 			return (false);
 		}
+		state->cur_action =
+		    &state->cur_activity->actions[state->cur_activity->num_actions];
+		state->cur_activity->num_actions++;
+		initialize_cfg_payload(&state->cur_action->send);
+		if (tag == VALUE_TAG_ACTIVITY_ACTION_REPLY)
+			state->cur_action->send.reply = true;
 		break;
-        case VALUE_TAG_ACTIVITY_ACTION_SEND_BEFORE:
-		if (!check_one_tag(state, tag, "send-before", "action"))
-			return (false);
-		break;
-        case VALUE_TAG_ACTIVITY_ACTION_SEND_BEFORE_CONTEXT_ID:
-	case VALUE_TAG_ACTIVITY_ACTION_SEND_BEFORE_CONTEXT_TAG:
-		/* nothing to do */
-		break;
-	case VALUE_TAG_ACTIVITY_ACTION_SEND_BEFORE_DATA:
-        case VALUE_TAG_ACTIVITY_ACTION_SEND_BEFORE_FILE:
-	case VALUE_TAG_ACTIVITY_ACTION_SEND_BEFORE_HANDLER:
-        case VALUE_TAG_ACTIVITY_ACTION_SEND_BEFORE_TEMPLATE:
-		if (state->cur_activity->action.before.type != TLMSP_CFG_PAYLOAD_NONE) {
-			ERRBUF("only one data source per payload specification is supported");
-			return (false);
-		}
-		break;
-        case VALUE_TAG_ACTIVITY_ACTION_SEND_REPLACE:
-		if (!check_one_tag(state, tag, "replace", "action"))
-			return (false);
-		break;
-        case VALUE_TAG_ACTIVITY_ACTION_SEND_REPLACE_CONTEXT_ID:
-	case VALUE_TAG_ACTIVITY_ACTION_SEND_REPLACE_CONTEXT_TAG:
-		/* nothing to do */
-		break;
-	case VALUE_TAG_ACTIVITY_ACTION_SEND_REPLACE_DATA:
-        case VALUE_TAG_ACTIVITY_ACTION_SEND_REPLACE_FILE:
-        case VALUE_TAG_ACTIVITY_ACTION_SEND_REPLACE_HANDLER:
-        case VALUE_TAG_ACTIVITY_ACTION_SEND_REPLACE_TEMPLATE:
-		if (state->cur_activity->action.replace.type != TLMSP_CFG_PAYLOAD_NONE) {
-			ERRBUF("only one data source per payload specification is supported");
-			return (false);
-		}
-		break;
-        case VALUE_TAG_ACTIVITY_ACTION_REPLY:
-		if (!check_one_tag(state, tag, "reply", "action"))
-			return (false);
-		break;
-        case VALUE_TAG_ACTIVITY_ACTION_REPLY_CONTEXT_ID:
+        case VALUE_TAG_ACTIVITY_ACTION_SEND_CONTEXT_ID:
+	case VALUE_TAG_ACTIVITY_ACTION_REPLY_CONTEXT_ID:
+	case VALUE_TAG_ACTIVITY_ACTION_SEND_CONTEXT_TAG:
 	case VALUE_TAG_ACTIVITY_ACTION_REPLY_CONTEXT_TAG:
 		/* nothing to do */
 		break;
+	case VALUE_TAG_ACTIVITY_ACTION_SEND_DATA:
 	case VALUE_TAG_ACTIVITY_ACTION_REPLY_DATA:
-        case VALUE_TAG_ACTIVITY_ACTION_REPLY_FILE:
-        case VALUE_TAG_ACTIVITY_ACTION_REPLY_HANDLER:
-        case VALUE_TAG_ACTIVITY_ACTION_REPLY_TEMPLATE:
-		if (state->cur_activity->action.reply.type != TLMSP_CFG_PAYLOAD_NONE) {
+        case VALUE_TAG_ACTIVITY_ACTION_SEND_FILE:
+	case VALUE_TAG_ACTIVITY_ACTION_REPLY_FILE:
+	case VALUE_TAG_ACTIVITY_ACTION_SEND_HANDLER:
+	case VALUE_TAG_ACTIVITY_ACTION_REPLY_HANDLER:
+        case VALUE_TAG_ACTIVITY_ACTION_SEND_TEMPLATE:
+	case VALUE_TAG_ACTIVITY_ACTION_REPLY_TEMPLATE:
+		if (state->cur_action->send.type != TLMSP_CFG_PAYLOAD_NONE) {
 			ERRBUF("only one data source per payload specification is supported");
 			return (false);
 		}
+		break;
+	case VALUE_TAG_ACTIVITY_PRESENT:
+		/* nothing to do */
 		break;
 	case VALUE_TAG_CLIENT:
 		if (!check_one_tag(state, tag, "client", "top-object"))
@@ -707,6 +681,7 @@ handle_value_tag_start_do(struct iteration_state *state, enum value_tag tag,
 	case VALUE_TAG_MIDDLEBOX_CERT_KEY_FILE:
 	case VALUE_TAG_MIDDLEBOX_TRANSPARENT:
 	case VALUE_TAG_MIDDLEBOX_DISCOVERED:
+	case VALUE_TAG_MIDDLEBOX_FORBIDDEN:
 		/* nothing to do */
 		break;
 	case VALUE_TAG_MIDDLEBOX_CONTEXT:
@@ -878,169 +853,65 @@ handle_value_tag_finish(struct iteration_state *state, enum value_tag tag,
 		state->cur_activity->match.pattern.param.s =
 		    value->type_string;
 		break;
-        case VALUE_TAG_ACTIVITY_ACTION: {
-		struct tlmsp_cfg_action *action = &state->cur_activity->action;
-
-		if ((action->fault == TLMSP_CFG_ACTION_FAULT_NONE) &&
-		    (action->after.type == TLMSP_CFG_PAYLOAD_NONE) &&
-		    (action->before.type == TLMSP_CFG_PAYLOAD_NONE) &&
-		    (action->replace.type == TLMSP_CFG_PAYLOAD_NONE) &&
-		    (action->reply.type == TLMSP_CFG_PAYLOAD_NONE)) {
-			ERRBUF("action is empty");
-			return (false);
-		}
+        case VALUE_TAG_ACTIVITY_ACTION:
+		/* nothing to do */
 		break;
-	}
         case VALUE_TAG_ACTIVITY_ACTION_FAULT:
-		state->cur_activity->action.fault = value->type_enum.e;
+		state->cur_action->fault = value->type_enum.e;
 		break;
-        case VALUE_TAG_ACTIVITY_ACTION_SEND_AFTER:
+        case VALUE_TAG_ACTIVITY_ACTION_RENEGOTIATE:
+		state->cur_action->renegotiate = value->type_boolean;
+		break;
+        case VALUE_TAG_ACTIVITY_ACTION_SEND:
+	case VALUE_TAG_ACTIVITY_ACTION_REPLY:
 		if (!check_cfg_payload(state,
-			&state->cur_activity->action.after, "send-after"))
+			&state->cur_action->send,
+			(tag == VALUE_TAG_ACTIVITY_ACTION_SEND) ?
+			"send" : "reply"))
 			return (false);
 		break;
-        case VALUE_TAG_ACTIVITY_ACTION_SEND_AFTER_CONTEXT_ID:
-		if (!set_cfg_payload_context_by_id(state,
-			&state->cur_activity->action.after, value->type_int,
-			"send-after"))
-			return (false);
-		break;
-	case VALUE_TAG_ACTIVITY_ACTION_SEND_AFTER_CONTEXT_TAG:
-		if (!set_cfg_payload_context_by_tag(state,
-			&state->cur_activity->action.after, value->type_string,
-			"send-after"))
-			return (false);
-		break;
-	case VALUE_TAG_ACTIVITY_ACTION_SEND_AFTER_DATA:
-		if (!set_cfg_payload_data(state,
-			&state->cur_activity->action.after, value->type_string))
-			return (false);
-		break;
-        case VALUE_TAG_ACTIVITY_ACTION_SEND_AFTER_FILE:
-		if (!set_cfg_payload_file(state,
-			&state->cur_activity->action.after, value->type_string))
-			return (false);
-		break;
-        case VALUE_TAG_ACTIVITY_ACTION_SEND_AFTER_HANDLER:
-		if (!set_cfg_payload_handler(state,
-			&state->cur_activity->action.after, value->type_string))
-			return (false);
-		break;
-        case VALUE_TAG_ACTIVITY_ACTION_SEND_AFTER_TEMPLATE:
-		if (!set_cfg_payload_template(state,
-			&state->cur_activity->action.after, value->type_string))
-			return (false);
-		break;
-        case VALUE_TAG_ACTIVITY_ACTION_SEND_BEFORE:
-		if (!check_cfg_payload(state,
-			&state->cur_activity->action.before, "send-before"))
-			return (false);
-		break;
-	case VALUE_TAG_ACTIVITY_ACTION_SEND_BEFORE_CONTEXT_ID:
-		if (!set_cfg_payload_context_by_id(state,
-			&state->cur_activity->action.before, value->type_int,
-			"send-before"))
-			return (false);
-		break;
-	case VALUE_TAG_ACTIVITY_ACTION_SEND_BEFORE_CONTEXT_TAG:
-		if (!set_cfg_payload_context_by_tag(state,
-			&state->cur_activity->action.before, value->type_string,
-			"send-before"))
-			return (false);
-		break;
-	case VALUE_TAG_ACTIVITY_ACTION_SEND_BEFORE_DATA:
-		if (!set_cfg_payload_data(state,
-			&state->cur_activity->action.before, value->type_string))
-			return (false);
-		break;
-        case VALUE_TAG_ACTIVITY_ACTION_SEND_BEFORE_FILE:
-		if (!set_cfg_payload_file(state,
-			&state->cur_activity->action.before, value->type_string))
-			return (false);
-		break;
-        case VALUE_TAG_ACTIVITY_ACTION_SEND_BEFORE_HANDLER:
-		if (!set_cfg_payload_handler(state,
-			&state->cur_activity->action.before, value->type_string))
-			return (false);
-		break;
-        case VALUE_TAG_ACTIVITY_ACTION_SEND_BEFORE_TEMPLATE:
-		if (!set_cfg_payload_template(state,
-			&state->cur_activity->action.before, value->type_string))
-			return (false);
-		break;
-        case VALUE_TAG_ACTIVITY_ACTION_SEND_REPLACE:
-		if (!check_cfg_payload(state,
-			&state->cur_activity->action.replace, "send-replace"))
-			return (false);
-		break;
-	case VALUE_TAG_ACTIVITY_ACTION_SEND_REPLACE_CONTEXT_ID:
-		if (!set_cfg_payload_context_by_id(state,
-			&state->cur_activity->action.replace, value->type_int,
-			"send-replace"))
-			return (false);
-		break;
-	case VALUE_TAG_ACTIVITY_ACTION_SEND_REPLACE_CONTEXT_TAG:
-		if (!set_cfg_payload_context_by_tag(state,
-			&state->cur_activity->action.replace, value->type_string,
-			"send-replace"))
-			return (false);
-		break;
-	case VALUE_TAG_ACTIVITY_ACTION_SEND_REPLACE_DATA:
-		if (!set_cfg_payload_data(state,
-			&state->cur_activity->action.replace, value->type_string))
-			return (false);
-		break;
-        case VALUE_TAG_ACTIVITY_ACTION_SEND_REPLACE_FILE:
-		if (!set_cfg_payload_file(state,
-			&state->cur_activity->action.replace, value->type_string))
-			return (false);
-		break;
-        case VALUE_TAG_ACTIVITY_ACTION_SEND_REPLACE_HANDLER:
-		if (!set_cfg_payload_handler(state,
-			&state->cur_activity->action.replace, value->type_string))
-			return (false);
-		break;
-        case VALUE_TAG_ACTIVITY_ACTION_SEND_REPLACE_TEMPLATE:
-		if (!set_cfg_payload_template(state,
-			&state->cur_activity->action.replace, value->type_string))
-			return (false);
-		break;
-        case VALUE_TAG_ACTIVITY_ACTION_REPLY:
-		if (!check_cfg_payload(state,
-			&state->cur_activity->action.reply, "reply"))
-			return (false);
-		break;
+        case VALUE_TAG_ACTIVITY_ACTION_SEND_CONTEXT_ID:
 	case VALUE_TAG_ACTIVITY_ACTION_REPLY_CONTEXT_ID:
 		if (!set_cfg_payload_context_by_id(state,
-			&state->cur_activity->action.reply, value->type_int,
-			"reply"))
+			&state->cur_action->send, value->type_int,
+			(tag == VALUE_TAG_ACTIVITY_ACTION_SEND_CONTEXT_ID) ?
+			"send" : "reply"))
 			return (false);
 		break;
+	case VALUE_TAG_ACTIVITY_ACTION_SEND_CONTEXT_TAG:
 	case VALUE_TAG_ACTIVITY_ACTION_REPLY_CONTEXT_TAG:
 		if (!set_cfg_payload_context_by_tag(state,
-			&state->cur_activity->action.reply, value->type_string,
-			"send-reply"))
+			&state->cur_action->send, value->type_string,
+			(tag == VALUE_TAG_ACTIVITY_ACTION_SEND_CONTEXT_TAG) ?
+			"send" : "reply"))
 			return (false);
 		break;
+	case VALUE_TAG_ACTIVITY_ACTION_SEND_DATA:
 	case VALUE_TAG_ACTIVITY_ACTION_REPLY_DATA:
 		if (!set_cfg_payload_data(state,
-			&state->cur_activity->action.reply, value->type_string))
+			&state->cur_action->send, value->type_string))
 			return (false);
 		break;
-        case VALUE_TAG_ACTIVITY_ACTION_REPLY_FILE:
+        case VALUE_TAG_ACTIVITY_ACTION_SEND_FILE:
+	case VALUE_TAG_ACTIVITY_ACTION_REPLY_FILE:
 		if (!set_cfg_payload_file(state,
-			&state->cur_activity->action.reply, value->type_string))
+			&state->cur_action->send, value->type_string))
 			return (false);
 		break;
-        case VALUE_TAG_ACTIVITY_ACTION_REPLY_HANDLER:
+        case VALUE_TAG_ACTIVITY_ACTION_SEND_HANDLER:
+	case VALUE_TAG_ACTIVITY_ACTION_REPLY_HANDLER:
 		if (!set_cfg_payload_handler(state,
-			&state->cur_activity->action.reply, value->type_string))
+			&state->cur_action->send, value->type_string))
 			return (false);
 		break;
-        case VALUE_TAG_ACTIVITY_ACTION_REPLY_TEMPLATE:
+        case VALUE_TAG_ACTIVITY_ACTION_SEND_TEMPLATE:
+	case VALUE_TAG_ACTIVITY_ACTION_REPLY_TEMPLATE:
 		if (!set_cfg_payload_template(state,
-			&state->cur_activity->action.reply, value->type_string))
+			&state->cur_action->send, value->type_string))
 			return (false);
+		break;
+        case VALUE_TAG_ACTIVITY_PRESENT:
+		state->cur_activity->present = value->type_boolean;
 		break;
 	case VALUE_TAG_CLIENT:
 		if (!HAS_VALUE_TAG(CLIENT_ADDRESS)) {
@@ -1164,6 +1035,17 @@ handle_value_tag_finish(struct iteration_state *state, enum value_tag tag,
 			    state->cur_middlebox->tag);
 			state->cur_middlebox->cert_key_file = strdup(state->tmpbuf);
 		}
+		/*
+		 * It is not valid to have a server insert a new middlebox
+		 * into the list that is also marked forbidden.
+		 */
+		if (state->cur_middlebox->discovered &&
+		    !state->cur_middlebox->transparent &&
+		    state->cur_middlebox->forbidden) {
+			ERRBUF("a non-transparent, discovered middlebox cannot be "
+			    "marked forbidden");
+			return (false);			
+		}
 		state->cur_middlebox = NULL;
 		break;
 	case VALUE_TAG_MIDDLEBOX_TAG:
@@ -1190,6 +1072,9 @@ handle_value_tag_finish(struct iteration_state *state, enum value_tag tag,
 		break;
 	case VALUE_TAG_MIDDLEBOX_DISCOVERED:
 		state->cur_middlebox->discovered = value->type_boolean;
+		break;
+	case VALUE_TAG_MIDDLEBOX_FORBIDDEN:
+		state->cur_middlebox->forbidden = value->type_boolean;
 		break;
 	case VALUE_TAG_MIDDLEBOX_CONTEXT:
 		if (!HAS_VALUE_TAG(MIDDLEBOX_CONTEXT_WHICH_IDS) &&
@@ -1294,7 +1179,7 @@ handle_value_tag_finish(struct iteration_state *state, enum value_tag tag,
 		if (!add_tag_to_activity_list(&state->activity_list_to_client,
 			value->type_string))
 			return (false);
-		if (!check_cfg_middlebox_activity_access(state, mb,
+		if (!check_cfg_middlebox_activity(state, mb,
 			mb->activities_to_client[mb->num_activities_to_client - 1]))
 			return (false);
 		break;
@@ -1307,7 +1192,7 @@ handle_value_tag_finish(struct iteration_state *state, enum value_tag tag,
 		if (!add_tag_to_activity_list(&state->activity_list_to_server,
 			value->type_string))
 			return (false);
-		if (!check_cfg_middlebox_activity_access(state, mb,
+		if (!check_cfg_middlebox_activity(state, mb,
 			mb->activities_to_server[mb->num_activities_to_server - 1]))
 			return (false);
 		break;
@@ -1352,7 +1237,6 @@ auto_array_one_more(struct auto_array_state *s)
 	}
 
 	s->next_index++;
-	s->current_size++;
 
 	return (true);
 }
@@ -1386,8 +1270,8 @@ initialize_cfg_server(struct tlmsp_cfg_server *cfg)
 	cfg->version_min = PROTOCOL_VERSION_MIN;
 	cfg->version_max = PROTOCOL_VERSION_MAX;
 	cfg->address = "";
-	cfg->cert_file = strdup("cert.pem");
-	cfg->cert_key_file = strdup("key.pem");
+	cfg->cert_file = strdup("server-cert.pem");
+	cfg->cert_key_file = strdup("server-key.pem");
 }
 
 static void
@@ -1538,12 +1422,10 @@ initialize_cfg_activity(struct tlmsp_cfg_activity *cfg)
 	 * cfg->match.container.param = 0;
 	 * cfg->match.pattern.type = TLMSP_CFG_MATCH_PATTERN_NONE;
 	 * cfg->match.pattern.param = { zeros }
-	 * cfg->action.fault = TLMSP_CFG_ACTION_FAULT_NONE;
-	 */	
-	initialize_cfg_payload(&cfg->action.after);
-	initialize_cfg_payload(&cfg->action.before);
-	initialize_cfg_payload(&cfg->action.replace);
-	initialize_cfg_payload(&cfg->action.reply);
+	 * cfg->num_actions = 0
+	 * cfg->actions = NULL
+	 * cfg->present = false
+	 */
 }
 
 static void
@@ -1599,6 +1481,7 @@ initialize_cfg_payload(struct tlmsp_cfg_payload *cfg)
 	/*
 	 * struct has already been zeroed
 	 *
+	 * cfg->reply = false;
 	 * cfg->context = NULL;
 	 * cfg->type = TLMSP_CFG_PAYLOAD_NONE;
 	 * cfg->param = { zeros }
@@ -1758,7 +1641,6 @@ set_cfg_payload_template(struct iteration_state *state,
 			segment = &cfg->param.template.segments[i];
 			if (find_first_match_reference(&decoded[search_index],
 				search_len, &ref_start, &ref_end, &ref_value)) {
-				printf("ref_start=%zu search_index=%zu\n", ref_start, search_index);
 				segment->data.len = ref_start;
 				segment->match_ref = ref_value;
 			} else {
@@ -1901,11 +1783,12 @@ initialize_cfg_middlebox(struct tlmsp_cfg_middlebox *cfg)
 	cfg->address = "";
 	cfg->cert_file = "";
 	cfg->cert_key_file = "";
-	cfg->transparent = false;
-	cfg->discovered = false;
 	/*
 	 * struct has already been zeroed
 	 *
+	 * cfg->transparent = false;
+	 * cfg->discovered = false;
+	 * cfg->forbidden = false;
 	 * cfg->num_contexts = 0;
 	 * cfg->contexts = NULL;
 	 * cfg->num_faults = 0;
@@ -1914,13 +1797,29 @@ initialize_cfg_middlebox(struct tlmsp_cfg_middlebox *cfg)
 }
 
 static bool
-check_cfg_middlebox_activity_access(struct iteration_state *state,
+check_cfg_middlebox_activity(struct iteration_state *state,
     struct tlmsp_cfg_middlebox *cfg, struct tlmsp_cfg_activity *activity)
 {
 	struct tlmsp_cfg_context *context;
+	const char *keyword;
 	context_access_array_t context_access;
 	unsigned int i;
 
+	/*
+	 * Middleboxes can't initiate a renegotiate
+	 */
+	for (i = 0; i < activity->num_actions; i++) {
+		if (activity->actions[i].renegotiate) {
+			ERRBUF("middlebox %s activity %s contains a renegotiate "
+			    "action", cfg->tag, activity->tag);
+			return (false);
+		}
+	}	
+
+	/*
+	 * Check whether middlebox has context access necessary for the
+	 * match and each action
+	 */
 	memset(context_access, 0, sizeof(context_access));
 	for (i = 0; i < cfg->num_contexts; i++)
 		context_access[cfg->contexts[i].base->id] = cfg->contexts[i].access;
@@ -1936,7 +1835,7 @@ check_cfg_middlebox_activity_access(struct iteration_state *state,
 				    "access to context %s", cfg->tag, activity->tag, context->tag);
 			else
 				ERRBUF("middlebox %s activity %s requires read "
-				    "access to context %u", cfg->tag, activity->tag, context->id);			
+				    "access to context %u", cfg->tag, activity->tag, context->id);
 			return (false);
 		}
 	}
@@ -1944,52 +1843,21 @@ check_cfg_middlebox_activity_access(struct iteration_state *state,
 	/*
 	 * Check that middlebox has write access to all action contexts
 	 */
-	context = activity->action.after.context;
-	if ((context != NULL) &&
-	    (context_access[context->id] != TLMSP_CFG_CTX_ACCESS_RW)) {
-		if (context->tag[0] != '\0')
-			ERRBUF("middlebox %s activity %s send-after requires write "
-			    "access to context %s", cfg->tag, activity->tag, context->tag);
-		else
-			ERRBUF("middlebox %s activity %s send-after requires write "
-			    "access to context %u", cfg->tag, activity->tag, context->id);
-		return (false);
-	}
-
-	context = activity->action.before.context;
-	if ((context != NULL) &&
-	    (context_access[context->id] != TLMSP_CFG_CTX_ACCESS_RW)) {
-		if (context->tag[0] != '\0')
-			ERRBUF("middlebox %s activity %s send-before requires write "
-			    "access to context %s", cfg->tag, activity->tag, context->tag);
-		else
-			ERRBUF("middlebox %s activity %s send-before requires write "
-			    "access to context %u", cfg->tag, activity->tag, context->id);			
-		return (false);
-	}
-
-	context = activity->action.replace.context;
-	if ((context != NULL) &&
-	    (context_access[context->id] != TLMSP_CFG_CTX_ACCESS_RW)) {
-		if (context->tag[0] != '\0')
-			ERRBUF("middlebox %s activity %s send-replace requires write "
-			    "access to context %s", cfg->tag, activity->tag, context->tag);
-		else
-			ERRBUF("middlebox %s activity %s send-replace requires write "
-			    "access to context %u", cfg->tag, activity->tag, context->id);			
-		return (false);
-	}
-
-	context = activity->action.reply.context;
-	if ((context != NULL) &&
-	    (context_access[context->id] != TLMSP_CFG_CTX_ACCESS_RW)) {
-		if (context->tag[0] != '\0')
-			ERRBUF("middlebox %s activity %s reply requires write "
-			    "access to context %s", cfg->tag, activity->tag, context->tag);
-		else
-			ERRBUF("middlebox %s activity %s reply requires write "
-			    "access to context %u", cfg->tag, activity->tag, context->id);			
-		return (false);
+	for (i = 0; i < activity->num_actions; i++) {
+		context = activity->actions[i].send.context;
+		keyword = activity->actions[i].send.reply ? "send" : "reply";
+		if ((context != NULL) &&
+		    (context_access[context->id] != TLMSP_CFG_CTX_ACCESS_RW)) {
+			if (context->tag[0] != '\0')
+				ERRBUF("middlebox %s activity %s %s requires write "
+				    "access to context %s", cfg->tag, activity->tag,
+				    keyword, context->tag);
+			else
+				ERRBUF("middlebox %s activity %s %s requires write "
+				    "access to context %u", cfg->tag, activity->tag,
+				    keyword, context->id);
+			return (false);
+		}
 	}
 
 	return (true);

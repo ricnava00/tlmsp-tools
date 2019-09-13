@@ -76,6 +76,18 @@ demo_splice_create(struct demo_app *app, demo_splice_free_cb_t free_cb,
 }
 
 bool
+demo_splice_handshake_complete(struct demo_splice *splice)
+{
+
+	if (!demo_connection_handshake_complete(splice->to_client))
+		return (false);
+	if (!demo_connection_handshake_complete(splice->to_server))
+		return (false);
+
+	return(true);
+}
+
+bool
 demo_splice_init_io_to_client(struct demo_splice *splice, SSL_CTX *ssl_ctx,
     int sock, struct ev_loop *loop, demo_connection_failed_cb_t fail_cb,
     demo_connection_cb_t cb, int initial_events)
@@ -115,6 +127,14 @@ demo_splice_start_io_to_server(struct demo_splice *splice)
 	demo_connection_set_phase(splice->to_server,
 	    DEMO_CONNECTION_PHASE_HANDSHAKE);
 	return (demo_connection_start_io(splice->to_server));
+}
+
+void
+demo_splice_pause_io(struct demo_splice *splice)
+{
+
+	demo_connection_pause_io(splice->to_client);
+	demo_connection_pause_io(splice->to_server);
 }
 
 void

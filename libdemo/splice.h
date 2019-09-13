@@ -39,6 +39,7 @@ struct demo_splice *demo_splice_create(struct demo_app *app,
                                        unsigned int num_activities_to_client,
                                        struct tlmsp_cfg_activity **activities_to_server,
                                        unsigned int num_activities_to_server);
+bool demo_splice_handshake_complete(struct demo_splice *splice);
 bool demo_splice_init_io_to_client(struct demo_splice *splice, SSL_CTX *ssl_ctx,
                                    int sock, struct ev_loop *loop,
                                    demo_connection_failed_cb_t fail_cb,
@@ -49,6 +50,7 @@ bool demo_splice_init_io_to_server(struct demo_splice *splice, SSL_CTX *ssl_ctx,
                                    demo_connection_failed_cb_t fail_cb,
                                    demo_connection_cb_t cb, int initial_events);
 bool demo_splice_start_io_to_server(struct demo_splice *splice);
+void demo_splice_pause_io(struct demo_splice *splice);
 void demo_splice_stop_io(struct demo_splice *splice);
 void demo_splice_resume_io(struct demo_splice *splice);
 void demo_splice_free(struct demo_splice *splice);

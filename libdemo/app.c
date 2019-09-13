@@ -21,10 +21,11 @@ unsigned int num_apps;
 struct demo_app *
 demo_app_create(bool uses_splices, demo_app_free_cb_t free_cb,
     demo_app_show_info_cb_t show_info_cb, void *app_data, uint64_t id,
-    const char *config_file)
+    const char *config_file, bool force_presentation)
 {
 	struct demo_app *app;
-
+	unsigned int i;
+	
 	app = calloc(1, sizeof(*app));
 	if (app == NULL)
 		return (NULL);
@@ -32,6 +33,7 @@ demo_app_create(bool uses_splices, demo_app_free_cb_t free_cb,
 	app->id = id;
 	app->app_data = app_data;
 	app->uses_splices = uses_splices;
+	app->force_presentation = force_presentation;
 	app->free_cb = free_cb;
 	app->show_info_cb = show_info_cb;
 
@@ -41,6 +43,11 @@ demo_app_create(bool uses_splices, demo_app_free_cb_t free_cb,
 	if (app->cfg == NULL)
 		goto error;
 
+	if (force_presentation) {
+		for (i = 0; i < app->cfg->num_activities; i++)
+			app->cfg->activities[i].present = true;
+	}
+	
 	demo_log_msg(1, "Loading match rule files");
 	if (!tlmsp_cfg_load_match_files(app->cfg, app->errbuf,
 		sizeof(app->errbuf)))
@@ -152,6 +159,7 @@ demo_app_free(struct demo_app *app)
 	if (app->next != NULL)
 		app->next->prev = app->prev;
 
+	/* no logging in this routine after this point */
 	app->free_cb(app->app_data);
 	demo_activity_free_regex(app->cfg);
 	tlmsp_cfg_free(app->cfg);

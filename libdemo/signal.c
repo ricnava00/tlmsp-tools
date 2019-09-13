@@ -52,9 +52,7 @@ demo_signal_handling_init(void)
 	sigaction(INFO_SIGNAL, &sa, NULL);
 	sigaction(SIGINT, &sa, NULL);
 
-#if 0
 	signal(SIGPIPE, SIG_IGN);
-#endif
 }
 
 static void

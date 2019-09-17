@@ -508,11 +508,12 @@ demo_conn_base_vprint_buf(struct demo_connection *conn, int fd, bool present,
 		demo_buf_to_line_string(line_string, sizeof(line_string),
 		    &buf[offset], BUF_PRINT_BYTES_PER_LINE);
 		demo_conn_base_print(conn, fd, present, "%s", line_string);
-		if ((i == 0) && alongside) {
+		if (alongside) {
 			dprintf(fd, " ");
 			vdprintf(fd, fmt, ap);
 			if (limited)
 				dprintf(fd, " (truncated to %zu bytes)", len);
+			alongside = false;
 		}
 		dprintf(fd, "\n");
 		offset += BUF_PRINT_BYTES_PER_LINE;

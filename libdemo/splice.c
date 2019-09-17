@@ -78,11 +78,14 @@ demo_splice_create(struct demo_app *app, demo_splice_free_cb_t free_cb,
 bool
 demo_splice_handshake_complete(struct demo_splice *splice)
 {
+	if (!splice->initial_handshake_complete) {
+		splice->initial_handshake_complete = true;
 
-	if (!demo_connection_handshake_complete(splice->to_client))
-		return (false);
-	if (!demo_connection_handshake_complete(splice->to_server))
-		return (false);
+		if (!demo_connection_handshake_complete(splice->to_client))
+			return (false);
+		if (!demo_connection_handshake_complete(splice->to_server))
+			return (false);
+	}
 
 	return(true);
 }

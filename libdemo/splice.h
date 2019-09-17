@@ -28,6 +28,7 @@ struct demo_splice {
 	demo_splice_show_info_cb_t show_info_cb;
 	struct demo_splice *next;
 	struct demo_splice *prev;
+	bool initial_handshake_complete;
 };
 
 

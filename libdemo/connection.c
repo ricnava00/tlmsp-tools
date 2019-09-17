@@ -67,6 +67,13 @@ demo_connection_create(struct demo_app *app, demo_connection_free_cb_t free_cb,
 	return (conn);
 }
 
+void
+demo_connection_shutdown(struct demo_connection *conn)
+{
+
+	if (conn->is_connected)
+		shutdown(conn->socket, SHUT_WR);
+}
 
 void
 demo_connection_set_phase(struct demo_connection *conn,
@@ -134,6 +141,7 @@ demo_conn_connected_cb(EV_P_ ev_io *w, int revents)
 	if (getsockname(conn->socket, (struct sockaddr *)&conn->local_name,
 		&len) == -1) {
 		demo_conn_print_errno(conn, "Could not get local address");
+		conn->io_error = true;
 		conn->fail_cb(conn->cb_data);
 		return;
 	}
@@ -141,6 +149,7 @@ demo_conn_connected_cb(EV_P_ ev_io *w, int revents)
 	if (getpeername(conn->socket, (struct sockaddr *)&conn->remote_name,
 		&len) == -1) {
 		demo_conn_print_errno(conn, "Could not get remote address");
+		conn->io_error = true;
 		conn->fail_cb(conn->cb_data);
 		return;
 	}
@@ -170,6 +179,9 @@ demo_connection_handshake_complete(struct demo_connection *conn)
 		return (false);
 	}
 
+	if (demo_connection_writes_pending(conn))
+		demo_connection_wait_for(conn, EV_WRITE);
+
 	if (!demo_activity_conn_set_up_time_triggered(conn)) {
 		demo_conn_print_error(conn,
 		    "Failed to set up time-triggered messages");
@@ -179,9 +191,6 @@ demo_connection_handshake_complete(struct demo_connection *conn)
 	if (!demo_activity_conn_start_time_triggered(conn))
 		demo_conn_print_error(conn,
 		    "Failed to start time-triggered messages");
-
-	if (demo_connection_writes_pending(conn))
-		demo_connection_wait_for(conn, EV_WRITE);
 
 	return (true);
 }
@@ -215,6 +224,7 @@ demo_connection_stop_io(struct demo_connection *conn)
 			ev_io_stop(EV_A_ &conn->watcher);
 		}
 	}
+	conn->wait_events = 0;
 }
 
 void
@@ -248,13 +258,6 @@ demo_connection_wait_for(struct demo_connection *conn, int events)
 		demo_conn_log(5, conn, "Wait for writable");
 
 	conn->wait_events |= events;
-}
-
-void
-demo_connection_wait_for_none(struct demo_connection *conn)
-{
-
-	conn->wait_events = 0;
 }
 
 int

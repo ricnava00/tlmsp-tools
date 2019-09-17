@@ -175,11 +175,16 @@ Under Linux, one has to resort to `kill -SIGUSR1 <pid>` from another terminal.
 
 The apache-httpd configuration is installed at `<install_dir>/etc/apache24/httpd.conf`
 and includes `<install_dir>/etc/apache24/httpd_tlmsp.conf`, which in turn 
-defines two virtual hosts:
+defines several virtual hosts:
 
-* One on `localhost:4443` configured to use `${TLMSP_UCL}/apache.ucl`
-* One on `localhost:4444` configured to use `${TLMSP_UCL}/apache.1mbox.ucl`
+| Listen address | Configuration file              |
+|----------------|---------------------------------|
+| localhost:4443 | ${TLMSP_UCL}/apache.ucl         |
+| localhost:4444 | ${TLMSP_UCL}/apache.1mbox.ucl   |
+| localhost:4445 | ${TLMSP_UCL}/apache.2mbox.ucl   |
+| localhost:4446 | ${TLMSP_UCL}/apache.251mbox.ucl |
 
+<br>
 The apache-httpd TLMSP integration requires the UCL file to define two contexts,
 one with the tag 'header' and one with the tag 'body', into which it places
 response headers and bodies, respectively.

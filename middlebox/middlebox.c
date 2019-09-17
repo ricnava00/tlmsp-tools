@@ -385,42 +385,48 @@ connection_died(struct demo_connection *conn)
 	 */
 	if (splice_state->reconnect_state != NULL) {
 		demo_connection_stop_io(conn);
-		demo_connection_wait_for_none(conn);
 		if (!new_outbound_connection(splice,
 			splice_state->reconnect_state))
 			demo_conn_print_error(conn,
 			    "Failed to create replacement connection");
 		demo_connection_free(conn);
-	} else {
+	} else if (conn->io_error || !conn->read_eof) {
+		demo_splice_stop_io(splice);
+		demo_splice_free(splice);
+	} else { /* read_eof is set */
+		if (conn->other_side->read_eof) {
+			demo_splice_stop_io(splice);
+			demo_splice_free(splice);
+			return;
+		}
+
 		/*
 		 * Stop this connection
 		 */
 		demo_connection_stop_io(conn);
-		demo_connection_wait_for_none(conn);
 
 		/*
 		 * If the other side is alive flush all containers in this
-		 * connection's read queue to it.  If the other side has
-		 * write data pending, let outbound processing continue,
-		 * otherwise stop it also.
+		 * connection's read queue to it.
 		 */
 		if (conn->other_side->is_connected) {
+			/*
+			 * Give match action a chance to operate on the read
+			 * queue as it may now have new containers that were
+			 * just added.
+			 */
+			if (!demo_activity_process_read_queue(conn))
+				demo_conn_print_error(conn,
+				    "Pre-flush activity processing failed");
+
+			/*
+			 * Flush any containers not claimed by match-action
+			 * through to the other side.
+			 */
 			demo_conn_log(2, conn, "Flushing all containers in "
 			    "read queue to other side");
 			container_queue_drain(&conn->read_queue,
 			    &conn->other_side->write_queue);
-
-			if (!demo_connection_writes_pending(conn->other_side)) {
-				demo_connection_stop_io(conn->other_side);
-				demo_connection_wait_for_none(conn->other_side);
-			}
-		}
-		
-		/*
-		 * When both connections are dead, the splice is done.
-		 */
-		if (!conn->other_side->is_connected) {
-			demo_splice_free(splice);
 		}
 	}
 }
@@ -445,6 +451,7 @@ conn_cb(EV_P_ ev_io *w, int revents)
 
 	if (revents & EV_ERROR) {
 		demo_conn_print_error(conn, "Socket error");
+		conn->io_error = true;
 		connection_died(conn);
 		goto done;
 	}
@@ -457,14 +464,17 @@ do_handshake:
 		switch (result) {
 		case 0:
 			demo_conn_print_error(conn, "Handshake terminated by protocol");
+			conn->io_error = true;
 			connection_died(conn);
 			break;
 		case 1:
 			demo_conn_log(1, conn, "Handshake complete");
 			demo_connection_set_phase(conn, DEMO_CONNECTION_PHASE_APPLICATION);
 			demo_connection_wait_for(conn, EV_READ);
-			if (!demo_splice_handshake_complete(splice))
+			if (!demo_splice_handshake_complete(splice)) {
+				conn->io_error = true;
 				connection_died(conn);
+			}
 			break;
 		default:
 			switch (ssl_error) {
@@ -474,9 +484,10 @@ do_handshake:
 				 * Establish outbound connection and
 				 * re-enter handshake.
 				 */
-				if (!new_outbound_connection(splice, NULL))
+				if (!new_outbound_connection(splice, NULL)) {
+					conn->io_error = true;
 					connection_died(conn);
-				else
+				} else
 					goto do_handshake;
 				break;
 			case SSL_ERROR_WANT_RECONNECT:
@@ -505,6 +516,7 @@ do_handshake:
 			default:
 				demo_conn_print_error_ssl(conn, ssl_error,
 				    "Handshake terminated due to fatal error");
+				conn->io_error = true;
 				connection_died(conn);
 				break;
 			}
@@ -533,6 +545,10 @@ do_handshake:
 			 * Update pending_writes - we may have drained them all.
 			 */
 			pending_writes = demo_connection_writes_pending(conn);
+			if (!pending_writes && conn->other_side->read_eof) {
+				demo_conn_log(1, conn, "Shutting down writes");
+				demo_connection_shutdown(conn);
+			}
 		}
 
 		/*
@@ -562,6 +578,7 @@ do_handshake:
 	default:
 		demo_conn_print_error(conn,
 		    "Unexpected connection phase %d", conn->phase);
+		conn->io_error = true;
 		connection_died(conn);
 		break;
 	}
@@ -610,13 +627,15 @@ read_containers(struct demo_connection *conn)
 			    "in context %u",
 			    TLMSP_container_length(container),
 			    TLMSP_container_context(container));
-			if (TLMSP_container_readable(container))
+			if (TLMSP_container_deleted(container))
+				demo_conn_log(3, conn, "Container marked deleted");
+			else if (!TLMSP_container_readable(container))
+				demo_conn_log(3, conn, "Container is opaque");
+			else
 				demo_conn_log_buf(3, conn,
 				    TLMSP_container_get_data(container),
 				    TLMSP_container_length(container), true,
 				    "Container data");
-			else
-				demo_conn_log(3, conn, "Container is opaque");
 			if (!container_queue_add(&conn->read_queue, container)) {
 				TLMSP_container_free(ssl, container);
 				result = -1;
@@ -637,9 +656,15 @@ read_containers(struct demo_connection *conn)
 				demo_conn_log(5, conn, "SSL_ERROR_WANT_WRITE");
 				demo_connection_wait_for(conn, EV_WRITE);
 				break;
+			case SSL_ERROR_ZERO_RETURN:
+				demo_conn_log(5, conn, "SSL_ERROR_ZERO_RETURN");
+				conn->read_eof = true;
+				result = -1;
+				break;
 			default:
 				demo_conn_print_error_ssl(conn, ssl_error,
 				    "Connection terminated due to fatal read error");
+				conn->read_eof = true;
 				result = -1;
 				break;
 			}
@@ -676,15 +701,15 @@ write_containers(struct demo_connection *conn)
 		    "in context %u",
 		    TLMSP_container_length(container),
 		    TLMSP_container_context(container));
-		if (TLMSP_container_readable(container))
+		if (TLMSP_container_deleted(container))
+			demo_conn_log(3, conn, "Container marked deleted");
+		else if (!TLMSP_container_readable(container))
+			demo_conn_log(3, conn, "Container is opaque");
+		else
 			demo_conn_log_buf(3, conn,
 			    TLMSP_container_get_data(container),
 			    TLMSP_container_length(container), true,
 			    "Container data");
-		else
-			demo_conn_log(3, conn, "Container %s",
-			    TLMSP_container_deleted(container) ?
-			    "marked deleted" : "is opaque");
 		ssl_result = TLMSP_container_write(ssl, container);
 		if (ssl_result > 0) {
 			demo_conn_log(2, conn, "Container send complete (result = %d)", ssl_result);
@@ -707,6 +732,7 @@ write_containers(struct demo_connection *conn)
 			default:
 				demo_conn_print_error_ssl(conn, ssl_error,
 				    "Connection terminated due to fatal write error");
+				conn->io_error = true;
 				result = -1;
 				break;
 			}

@@ -42,6 +42,8 @@ struct demo_connection {
 	struct demo_connection *other_side; /* only used when there is a splice */
 	bool to_client; /* only used when there is a splice */
 	bool is_connected;
+	bool read_eof;  /* read returned SSL_ERROR_ZERO_RETURN */
+	bool io_error;  /* other than eof */
 	struct sockaddr_storage local_name;
 	struct sockaddr_storage remote_name;
 	uint64_t id;
@@ -83,6 +85,7 @@ struct demo_connection *demo_connection_create(struct demo_app *app,
                                                void *app_data, uint64_t id,
                                                struct tlmsp_cfg_activity **activities,
                                                unsigned int num_activities);
+void demo_connection_shutdown(struct demo_connection *conn);
 void demo_connection_set_phase(struct demo_connection *conn,
                                enum demo_connection_phase phase);
 bool demo_connection_handshake_complete(struct demo_connection *conn);
@@ -96,7 +99,6 @@ void demo_connection_stop_io(struct demo_connection *conn);
 void demo_connection_events_arrived(struct demo_connection *conn, int events);
 bool demo_connection_writes_pending(struct demo_connection *conn);
 void demo_connection_wait_for(struct demo_connection *conn, int events);
-void demo_connection_wait_for_none(struct demo_connection *conn);
 int demo_connection_wait_events(struct demo_connection *conn);
 void demo_connection_resume_io(struct demo_connection *conn);
 void demo_connection_free(struct demo_connection *conn);

@@ -337,8 +337,6 @@ connection_died(struct demo_connection *conn)
 {
 
 	demo_connection_stop_io(conn);
-	demo_connection_wait_for_none(conn);
-
 	demo_connection_free(conn);
 }
 
@@ -413,6 +411,7 @@ read_containers(struct demo_connection *conn)
 	int ssl_result;
 	int ssl_error;
 	TLMSP_Container *container;
+	size_t length;
 	tlmsp_context_id_t context_id;
 
 	/*
@@ -441,14 +440,29 @@ read_containers(struct demo_connection *conn)
 	} else {
 		ssl_result = TLMSP_container_read(ssl, &container);
 		if (ssl_result > 0) {
-			demo_conn_log(2, conn, "Received container (length=%u) "
-			    "in context %u using container API",
-			    TLMSP_container_length(container),
-			    TLMSP_container_context(container));
-			if (!container_queue_add(&conn->read_queue,
-				container)) {
+			context_id = TLMSP_container_context(container);
+			length = TLMSP_container_length(container);
+			if (TLMSP_container_deleted(container)) {
+				demo_conn_log(2, conn, "Received deleted "
+				    "container in context %u using container API",
+				    context_id);
+				TLMSP_container_free(ssl, container);
+				return (true);
+			} else if (!TLMSP_container_readable(container)) {
+				demo_conn_print_error(conn,
+				    "Opaque container unexpectedly received in "
+				    "context %d using containe API", context_id);
 				TLMSP_container_free(ssl, container);
 				return (false);
+			} else {
+				demo_conn_log(2, conn, "Received container "
+				    "(length=%u) in context %u using container "
+				    "API", length, context_id);
+				if (!container_queue_add(&conn->read_queue,
+					container)) {
+					TLMSP_container_free(ssl, container);
+					return (false);
+				}
 			}
 		}
 	}
@@ -506,6 +520,7 @@ write_containers(struct demo_connection *conn)
 	struct server_state *server = conn_state->server;
 	SSL *ssl = conn->ssl;
 	TLMSP_Container *container;
+	size_t length;
 	tlmsp_context_id_t context_id;
 	int result;
 	int ssl_result;
@@ -514,12 +529,12 @@ write_containers(struct demo_connection *conn)
 	container = container_queue_head(&conn->write_queue);
 	while (container != NULL) {
 		context_id = TLMSP_container_context(container);
+		length = TLMSP_container_length(container);
 		demo_conn_log(2, conn, "Sending container (length=%u) "
-		    "in context %u using %s API",
-		    TLMSP_container_length(container), context_id,
+		    "in context %u using %s API", length, context_id,
 		    server->use_stream_api ? "stream" : "container");
 		demo_conn_log_buf(3, conn, TLMSP_container_get_data(container),
-		    TLMSP_container_length(container), true, "Container data");
+		    length, true, "Container data");
 		if (server->use_stream_api) {
 			if (!TLMSP_set_current_context(ssl, context_id)) {
 				demo_conn_print_error(conn,
@@ -528,8 +543,7 @@ write_containers(struct demo_connection *conn)
 				return (false);
 			}
 			ssl_result = SSL_write(ssl,
-			    TLMSP_container_get_data(container),
-			    TLMSP_container_length(container));
+			    TLMSP_container_get_data(container), length);
 			if (ssl_result > 0)
 				TLMSP_container_free(ssl, container);
 		} else {
@@ -539,8 +553,10 @@ write_containers(struct demo_connection *conn)
 			demo_conn_log(2, conn, "Container send complete (result=%d)", ssl_result);
 			container_queue_remove_head(&conn->write_queue);
 			container = container_queue_head(&conn->write_queue);
-		} else
+		} else {
+			demo_conn_log(2, conn, "Channel not ready");
 			break;
+		}
 	}
 	result = true;
 	if (ssl_result <= 0) {

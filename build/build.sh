@@ -270,6 +270,7 @@ if [ "${do_configure}" = "yes" ]; then
     announce "Configuring OpenSSL"
     require_success ./config \
 		    ${debug:+-d} \
+		    --strict-warnings \
 		    --prefix=${install_dir}
 fi
 announce "Building OpenSSL"

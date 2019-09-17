@@ -373,7 +373,7 @@ bool
 tlmsp_cfg_process_middlebox_list_server_openssl(const struct tlmsp_cfg *cfg,
     TLMSP_Middleboxes *middleboxes)
 {
-	TLMSP_Middlebox *mb;
+	TLMSP_Middlebox *mb, *prev_mb;
 	const struct tlmsp_cfg_middlebox *cfg_mb;
 	struct tlmsp_middlebox_configuration tmc;
 	unsigned int i;
@@ -392,6 +392,7 @@ tlmsp_cfg_process_middlebox_list_server_openssl(const struct tlmsp_cfg *cfg,
 	 * caching from prior connections (i.e. there will not be any
 	 * middlebox list contents not described in the config file).
 	 */
+	prev_mb = NULL;
 	mb = TLMSP_middleboxes_first(middleboxes);
 	for (i = 0; i < cfg->num_middleboxes; i++) {
 		cfg_mb = &cfg->middleboxes[i];
@@ -416,7 +417,7 @@ tlmsp_cfg_process_middlebox_list_server_openssl(const struct tlmsp_cfg *cfg,
 			tmc.transparent = cfg_mb->transparent;
 			tmc.contexts = contexts;
 			tmc.ca_file_or_dir = NULL;
-			if (!TLMSP_middleboxes_insert_before(middleboxes, mb, &tmc)) {
+			if (!TLMSP_middleboxes_insert_after(middleboxes, prev_mb, &tmc)) {
 				return (false);
 			}
 		} else if (mb != NULL) {
@@ -457,6 +458,7 @@ tlmsp_cfg_process_middlebox_list_server_openssl(const struct tlmsp_cfg *cfg,
 					return (false);
 				}
 			}
+			prev_mb = mb;
 			mb = TLMSP_middleboxes_next(middleboxes, mb);
 		} else
 			return (false);

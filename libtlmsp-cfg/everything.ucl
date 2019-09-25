@@ -121,12 +121,36 @@ activity {
         #   ${1}..${n} refer to the corresponding capture group in the
         #   match regex.  A reference to an undefined substitution
         #   variable resolves to an empty set of bytes.
+        #
+        #   handler = "cmd arg1 arg2..."
+        #   Run the given command string under /bin/sh.  The contents
+        #   of the match, if any, will be supplied to the handler on
+        #   its stdin, and everything the handler writes to its stdout
+        #   will be sent in the given context.
         # }
         # 
         send {
             context = 2
             data = "ping"
         }
+
+        #   'alert' - Send the given alert.  On a middlebox, the alert
+        #             is sent in direction indicated by the function
+        #             the activity is included in.
+        #
+        # alert {
+        #   context = <id> | <tag>
+        #   Which context to send the data in - either context id 0 or
+        #   the id or tag of a defined context.
+        #
+        #   level = fatal | warning
+        #   The level of the alert, per RFC 5246
+        #
+        #   description = <int> | <name>
+        #   The description value given either as a number in the range
+        #   [0, 255] or the name as defined in RFC 5246 or ETSI TS 103-523-2.
+        # }
+        #
     }
 
     # present  = yes | no | true | false

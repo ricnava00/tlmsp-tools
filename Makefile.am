@@ -23,6 +23,7 @@ lib_LTLIBRARIES = \
 libtlmsp_cfg_la_SOURCES = \
 	libtlmsp-cfg/api.c \
 	libtlmsp-cfg/format.c \
+	libtlmsp-cfg/openssl.c \
 	libtlmsp-cfg/parse.c \
 	libtlmsp-cfg/print.c
 libtlmsp_cfg_la_LIBADD = \
@@ -95,6 +96,7 @@ tlmsp_server_LDADD = \
 
 pkginclude_HEADERS = \
 	libtlmsp-cfg/libtlmsp-cfg.h \
+	libtlmsp-cfg/libtlmsp-cfg-openssl.h \
 	libtlmsp-util/libtlmsp-util.h
 
 

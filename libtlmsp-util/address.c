@@ -200,6 +200,8 @@ tlmsp_util_address_to_sockaddr(int address_type, const uint8_t *address,
 			snprintf(errbuf, errbuf_len,
 			    "getaddrinfo(%s, %s) failed: %s", host, port,
 			    gai_strerror(errcode));
+		free(host);
+		free(port);
 		return (NULL);
 	}
 
@@ -232,6 +234,8 @@ tlmsp_util_address_to_sockaddr(int address_type, const uint8_t *address,
 		snprintf(errbuf, errbuf_len,
 		    "No IPv4 or IPv6 address found for %s", host);
 	freeaddrinfo(addrs);
+	free(host);
+	free(port);
 
 	return (result);
 }

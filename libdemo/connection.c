@@ -71,8 +71,11 @@ void
 demo_connection_shutdown(struct demo_connection *conn)
 {
 
-	if (conn->is_connected)
+	if (conn->is_connected && !conn->is_shut_down) {
+		demo_conn_log(1, conn, "Shutting down writes");
 		shutdown(conn->socket, SHUT_WR);
+		conn->is_shut_down = true;
+	}
 }
 
 void
@@ -86,7 +89,8 @@ demo_connection_set_phase(struct demo_connection *conn,
 bool
 demo_connection_init_io(struct demo_connection *conn, SSL_CTX *ssl_ctx, int sock,
     struct ev_loop *loop, demo_connection_failed_cb_t fail_cb,
-    demo_connection_cb_t cb, int initial_events)
+    demo_connection_connected_cb_t connected_cb, demo_connection_cb_t cb,
+    int initial_events)
 {
 	
 	conn->ssl = SSL_new(ssl_ctx);
@@ -97,8 +101,8 @@ demo_connection_init_io(struct demo_connection *conn, SSL_CTX *ssl_ctx, int sock
 	conn->socket = sock;
 	conn->loop = loop;
 	conn->fail_cb = fail_cb;
-	conn->cb_data = conn;
-	
+	conn->connected_cb = connected_cb;
+
 	ev_io_init(&conn->connected_watcher, demo_conn_connected_cb,
 	    conn->socket, EV_WRITE);
 	conn->connected_watcher.data = conn;
@@ -116,7 +120,7 @@ demo_connection_init_io(struct demo_connection *conn, SSL_CTX *ssl_ctx, int sock
 	conn->queues_initialized = true;
 
 	ev_io_init(&conn->watcher, cb, conn->socket, conn->wait_events);
-	conn->watcher.data = conn->cb_data;
+	conn->watcher.data = conn;
 
 	return (true);
 }
@@ -125,7 +129,8 @@ bool
 demo_connection_start_io(struct demo_connection *conn)
 {
 	struct ev_loop *loop = conn->loop;
-	
+
+	demo_connection_set_phase(conn, DEMO_CONNECTION_PHASE_HANDSHAKE);
 	ev_io_start(EV_A_ &conn->connected_watcher);
 
 	return (true);
@@ -137,33 +142,27 @@ demo_conn_connected_cb(EV_P_ ev_io *w, int revents)
 	struct demo_connection *conn = w->data;
 	socklen_t len;
 
+	if (conn->connected_cb)
+		conn->connected_cb(conn);
+	
 	len = sizeof(conn->local_name);
 	if (getsockname(conn->socket, (struct sockaddr *)&conn->local_name,
 		&len) == -1) {
 		demo_conn_print_errno(conn, "Could not get local address");
-		conn->io_error = true;
-		conn->fail_cb(conn->cb_data);
+		conn->fail_cb(conn);
 		return;
 	}
 	len = sizeof(conn->remote_name);
 	if (getpeername(conn->socket, (struct sockaddr *)&conn->remote_name,
 		&len) == -1) {
 		demo_conn_print_errno(conn, "Could not get remote address");
-		conn->io_error = true;
-		conn->fail_cb(conn->cb_data);
+		conn->fail_cb(conn);
 		return;
 	}
 	demo_conn_log_sockaddr(1, conn, "Local  address is ",
 	    (struct sockaddr *)&conn->local_name);
 	demo_conn_log_sockaddr(1, conn, "Remote address is ",
 	    (struct sockaddr *)&conn->remote_name);
-
-	/*
-	 * XXX Once the client and server are structured to detect handshake
-	 * complete, this will move to that point in client/server.
-	 */
-	if (!conn->splice)
-		demo_connection_handshake_complete(conn);
 
 	conn->is_connected = true;
 	ev_io_stop(EV_A_ &conn->connected_watcher);
@@ -173,6 +172,14 @@ demo_conn_connected_cb(EV_P_ ev_io *w, int revents)
 bool
 demo_connection_handshake_complete(struct demo_connection *conn)
 {
+	
+	demo_connection_set_phase(conn, DEMO_CONNECTION_PHASE_APPLICATION);
+
+	if (conn->initial_handshake_complete)
+		return (true);
+
+	conn->initial_handshake_complete = true;
+
 	if (!demo_activity_conn_queue_initial(conn)) {
 		demo_conn_print_error(conn,
 		    "Failed to queue initial send data for write");
@@ -283,7 +290,7 @@ void
 demo_connection_free(struct demo_connection *conn)
 {
 
-	demo_conn_log(1, conn, "Shutting down");
+	demo_conn_log(1, conn, "Closing");
 
 	if (!conn->app->uses_splices)
 		demo_app_remove_connection(conn->app, conn);
@@ -300,7 +307,8 @@ demo_connection_free(struct demo_connection *conn)
 		SSL_free(conn->ssl);
 
 	demo_activity_conn_tear_down_time_triggered(conn);
-	
+
+	free(conn->activity_states);
 	free(conn);
 }
 

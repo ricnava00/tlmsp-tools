@@ -28,7 +28,6 @@ struct demo_splice {
 	demo_splice_show_info_cb_t show_info_cb;
 	struct demo_splice *next;
 	struct demo_splice *prev;
-	bool initial_handshake_complete;
 };
 
 
@@ -44,11 +43,13 @@ bool demo_splice_handshake_complete(struct demo_splice *splice);
 bool demo_splice_init_io_to_client(struct demo_splice *splice, SSL_CTX *ssl_ctx,
                                    int sock, struct ev_loop *loop,
                                    demo_connection_failed_cb_t fail_cb,
+                                   demo_connection_connected_cb_t connected_cb,
                                    demo_connection_cb_t cb, int initial_events);
 bool demo_splice_start_io_to_client(struct demo_splice *splice);
 bool demo_splice_init_io_to_server(struct demo_splice *splice, SSL_CTX *ssl_ctx,
                                    int sock, struct ev_loop *loop,
                                    demo_connection_failed_cb_t fail_cb,
+                                   demo_connection_connected_cb_t connected_cb,
                                    demo_connection_cb_t cb, int initial_events);
 bool demo_splice_start_io_to_server(struct demo_splice *splice);
 void demo_splice_pause_io(struct demo_splice *splice);

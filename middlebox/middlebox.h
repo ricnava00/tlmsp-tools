@@ -9,6 +9,7 @@
 
 #include <ev.h>
 #include <libtlmsp-cfg.h>
+#include <libtlmsp-util.h>
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -21,15 +22,12 @@
 #include <openssl/tlmsp.h>
 
 
-#define CONTEXT_ID_LUT_SIZE	(TLMSP_CONTEXT_ID_MAX + 1)
-
-
 struct demo_app;
 struct splice_state;
 
 struct connection_state {
 	struct splice_state *splice;
-	struct context_state *context[CONTEXT_ID_LUT_SIZE];
+	struct context_state *context[TLMSP_UTIL_CONTEXT_ID_LUT_SIZE];
 	bool is_dead;
 };
 

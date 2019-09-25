@@ -20,11 +20,13 @@
 struct demo_app;
 struct demo_splice;
 struct tlmsp_cfg_activity;
+struct demo_connection;
 
+typedef void (*demo_connection_connected_cb_t)(struct demo_connection *conn);
 typedef void (*demo_connection_cb_t)(EV_P_ struct ev_io *w, int revents);
-typedef void (*demo_connection_failed_cb_t)(void *cb_data);
-typedef void (*demo_connection_free_cb_t)(void *);
-typedef void (*demo_connection_show_info_cb_t)(void *);
+typedef void (*demo_connection_failed_cb_t)(struct demo_connection *conn);
+typedef void (*demo_connection_free_cb_t)(void *app_data);
+typedef void (*demo_connection_show_info_cb_t)(void *app_data);
 
 enum demo_connection_phase {
 	DEMO_CONNECTION_PHASE_UNKNOWN,
@@ -37,13 +39,14 @@ struct demo_connection {
 	struct demo_app *app;
 	void *app_data;
 	demo_connection_failed_cb_t fail_cb;
-	void *cb_data;
+	demo_connection_connected_cb_t connected_cb;
 	struct demo_splice *splice; /* only used by middlebox */
 	struct demo_connection *other_side; /* only used when there is a splice */
 	bool to_client; /* only used when there is a splice */
 	bool is_connected;
+	bool initial_handshake_complete;
+	bool is_shut_down;
 	bool read_eof;  /* read returned SSL_ERROR_ZERO_RETURN */
-	bool io_error;  /* other than eof */
 	struct sockaddr_storage local_name;
 	struct sockaddr_storage remote_name;
 	uint64_t id;
@@ -92,6 +95,7 @@ bool demo_connection_handshake_complete(struct demo_connection *conn);
 bool demo_connection_init_io(struct demo_connection *conn, SSL_CTX *ssl_ctx,
                              int sock, struct ev_loop *loop,
                              demo_connection_failed_cb_t fail_cb,
+                             demo_connection_connected_cb_t connected_cb,
                              demo_connection_cb_t cb, int initial_events);
 bool demo_connection_start_io(struct demo_connection *conn);
 void demo_connection_pause_io(struct demo_connection *conn);

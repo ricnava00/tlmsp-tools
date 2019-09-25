@@ -20,6 +20,7 @@
 #include <inttypes.h>
 #include <libgen.h>
 #include <libtlmsp-cfg.h>
+#include <libtlmsp-cfg-openssl.h>
 #include <libtlmsp-util.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -61,7 +62,8 @@ static struct server_state *new_server(struct ev_loop *loop,
 static void free_server_cb(void *app_data);
 static void accept_cb(EV_P_ ev_io *w, int revents);
 static bool new_connection(struct server_state *server, int sock);
-static int discovery_check_and_edit(SSL *ssl, void *arg);
+static int discovery_check_and_edit(SSL *ssl, void *arg,
+                                    TLMSP_Middleboxes *middleboxes);
 static void free_connection_cb(void *app_data);
 static void connection_died(struct demo_connection *conn);
 static void conn_cb(EV_P_ ev_io *w, int revents);
@@ -289,7 +291,7 @@ new_connection(struct server_state *server, int sock)
 	}
 
 	if (!demo_connection_init_io(conn, server->ssl_ctx, sock, server->loop,
-		(demo_connection_failed_cb_t)connection_died, conn_cb, EV_READ))
+		connection_died, NULL, conn_cb, EV_READ))
 		goto error;
 	SSL_set_accept_state(conn->ssl);
 
@@ -310,25 +312,18 @@ free_connection_cb(void *app_data)
 {
 	struct connection_state *conn_state = app_data;
 
+	free(conn_state->read_buffer);
 	free(conn_state);
 }
 
 int
-discovery_check_and_edit(SSL *ssl, void *arg)
+discovery_check_and_edit(SSL *ssl, void *arg, TLMSP_Middleboxes *middleboxes)
 {
 	struct demo_connection *conn = arg;
-	TLMSP_Middleboxes *middleboxes;
 	int result;
 
-	middleboxes = TLMSP_get_middleboxes_instance(conn->ssl);
-	if (middleboxes == NULL)
-		return (0);
 	result = tlmsp_cfg_process_middlebox_list_server_openssl(conn->app->cfg,
 	    middleboxes);
-	/* assume there were edits */
-	if (!TLMSP_set_middleboxes_instance(conn->ssl, middleboxes))
-		result = 0;
-	TLMSP_middleboxes_free(middleboxes);
 	return (result);
 }
 
@@ -344,54 +339,103 @@ static void
 conn_cb(EV_P_ ev_io *w, int revents)
 {
 	struct demo_connection *conn = w->data;
+	int result;
+	int ssl_error;
 	bool pending_writes;
 	
 	demo_connection_pause_io(conn);
 	demo_connection_events_arrived(conn, revents);
 
-	/*
-	 * The general approach is that we prioritize writes over
-	 * reads - we work on pending write data until it is all
-	 * sent, then we return to reading.
-	 *
-	 * In the midst of all this, OpenSSL may ask us to wait for
-	 * read or write events on the socket either directly
-	 * related to reads or writes that we are trying to do, or
-	 * related to internal handling of protocol details (e.g.,
-	 * renegotiation).
-	 */
-
-	/*
-	 * Handle pending writes
-	 */
-	pending_writes = demo_connection_writes_pending(conn);
-	if (pending_writes) {
-		if (!write_containers(conn)) {
+	switch (conn->phase) {
+	case DEMO_CONNECTION_PHASE_HANDSHAKE:
+		result = SSL_accept(conn->ssl);
+		switch (result) {
+		case 0:
+			demo_conn_print_error(conn, "Handshake terminated by protocol");
 			connection_died(conn);
 			return;
+			break;
+		case 1:
+			demo_conn_log(1, conn, "Handshake complete");
+			demo_connection_wait_for(conn, EV_READ);
+			if (!demo_connection_handshake_complete(conn)) {
+				connection_died(conn);
+				return;
+			}
+			break;
+		default:
+			ssl_error = SSL_get_error(conn->ssl, result);
+			switch (ssl_error) {
+			case SSL_ERROR_WANT_READ:
+				demo_conn_log(5, conn, "SSL_ERROR_WANT_READ");
+				demo_connection_wait_for(conn, EV_READ);
+				break;
+			case SSL_ERROR_WANT_WRITE:
+				demo_conn_log(5, conn, "SSL_ERROR_WANT_WRITE");
+				demo_connection_wait_for(conn, EV_WRITE);
+				break;
+			default:
+				demo_conn_print_error_ssl(conn, ssl_error,
+				    "Handshake terminated due to fatal error");
+				connection_died(conn);
+				return;
+				break;
+			}
+			break;
 		}
+		break;
+	case DEMO_CONNECTION_PHASE_APPLICATION:
 		/*
-		 * Update pending_writes - we may have drained them all.
+		 * The general approach is that we prioritize writes over
+		 * reads - we work on pending write data until it is all
+		 * sent, then we return to reading.
+		 *
+		 * In the midst of all this, OpenSSL may ask us to wait for
+		 * read or write events on the socket either directly
+		 * related to reads or writes that we are trying to do, or
+		 * related to internal handling of protocol details (e.g.,
+		 * renegotiation).
+		 */
+
+		/*
+		 * Handle pending writes
 		 */
 		pending_writes = demo_connection_writes_pending(conn);
-	}
-
-	/*
-	 * If we are out of pending write data, do some reading.
-	 */
-	if (!pending_writes) {
-		if (!read_containers(conn)) {
-			connection_died(conn);
-			return;
+		if (pending_writes) {
+			if (!write_containers(conn)) {
+				connection_died(conn);
+				return;
+			}
+			/*
+			 * Update pending_writes - we may have drained them all.
+			 */
+			pending_writes = demo_connection_writes_pending(conn);
 		}
-	}
 
-	/*
-	 * If none of the above processing requires a further read
-	 * or write event, wait for new data to arrive.
-	 */
-	if (demo_connection_wait_events(conn) == 0)
-		demo_connection_wait_for(conn, EV_READ);
+		/*
+		 * If we are out of pending write data, do some reading.
+		 */
+		if (!pending_writes) {
+			if (!read_containers(conn)) {
+				connection_died(conn);
+				return;
+			}
+		}
+
+		/*
+		 * If none of the above processing requires a further read
+		 * or write event, wait for new data to arrive.
+		 */
+		if (demo_connection_wait_events(conn) == 0)
+			demo_connection_wait_for(conn, EV_READ);
+		break;
+	default:
+		demo_conn_print_error(conn,
+		    "Unexpected connection phase %d", conn->phase);
+		connection_died(conn);
+		return;
+		break;
+	}
 
 	demo_connection_resume_io(conn);
 }
@@ -451,7 +495,7 @@ read_containers(struct demo_connection *conn)
 			} else if (!TLMSP_container_readable(container)) {
 				demo_conn_print_error(conn,
 				    "Opaque container unexpectedly received in "
-				    "context %d using containe API", context_id);
+				    "context %d using container API", context_id);
 				TLMSP_container_free(ssl, container);
 				return (false);
 			} else {

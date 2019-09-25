@@ -19,6 +19,7 @@
 #include <ucl.h>
 
 #include "libtlmsp-cfg.h"
+#include "libtlmsp-util.h"
 #include "format.h"
 #include "trace.h"
 
@@ -209,8 +210,8 @@ const struct value_type cfg_format =
          KEY("context",
               OBJECT_ARRAY(CONTEXT,
                            KEY("id", INT_RANGE(CONTEXT_ID,
-                                               TLMSP_CONTEXT_ID_MIN,
-                                               TLMSP_CONTEXT_ID_MAX)),
+                                               TLMSP_UTIL_CONTEXT_ID_MIN,
+                                               TLMSP_UTIL_CONTEXT_ID_MAX)),
                            KEY("tag", STRING(CONTEXT_TAG)),
                            KEY("comment", STRING(CONTEXT_COMMENT)),
                            KEY("purpose", STRING(CONTEXT_PURPOSE)),
@@ -218,12 +219,12 @@ const struct value_type cfg_format =
          KEY("activity",
               OBJECT_ARRAY(ACTIVITY,
                            KEY("tag", STRING(ACTIVITY_TAG)),
-                           KEY("match", 
+                           KEY("match",
                                 OBJECT(ACTIVITY_MATCH,
                                        KEY("which",
                                             INT_ARRAY_RANGE(ACTIVITY_MATCH_WHICH_IDS,
-                                                            TLMSP_CONTEXT_ID_MIN,
-                                                            TLMSP_CONTEXT_ID_MAX),
+                                                            TLMSP_UTIL_CONTEXT_ID_MIN,
+                                                            TLMSP_UTIL_CONTEXT_ID_MAX),
                                             STRING_ARRAY(ACTIVITY_MATCH_WHICH_TAGS)),
                                        KEY("at", INT_RANGE(ACTIVITY_MATCH_AT,
                                                            0,
@@ -257,29 +258,72 @@ const struct value_type cfg_format =
                                             OBJECT_ARRAY(ACTIVITY_ACTION_SEND,
                                                    KEY("context",
                                                         INT_RANGE(ACTIVITY_ACTION_SEND_CONTEXT_ID,
-                                                                  TLMSP_CONTEXT_ID_MIN,
-                                                                  TLMSP_CONTEXT_ID_MAX),
+                                                                  TLMSP_UTIL_CONTEXT_ID_MIN,
+                                                                  TLMSP_UTIL_CONTEXT_ID_MAX),
                                                         STRING(ACTIVITY_ACTION_SEND_CONTEXT_TAG)),
                                                    KEY("data", STRING(ACTIVITY_ACTION_SEND_DATA)),
                                                    KEY("file", STRING(ACTIVITY_ACTION_SEND_FILE)),
-#ifdef notyet
                                                    KEY("handler", STRING(ACTIVITY_ACTION_SEND_HANDLER)),
-#endif
                                                    KEY("template", STRING(ACTIVITY_ACTION_SEND_TEMPLATE)))),
                                        KEY("reply",
                                             OBJECT_ARRAY(ACTIVITY_ACTION_REPLY,
                                                    KEY("context",
                                                         INT_RANGE(ACTIVITY_ACTION_REPLY_CONTEXT_ID,
-                                                                  TLMSP_CONTEXT_ID_MIN,
-                                                                  TLMSP_CONTEXT_ID_MAX),
+                                                                  TLMSP_UTIL_CONTEXT_ID_MIN,
+                                                                  TLMSP_UTIL_CONTEXT_ID_MAX),
                                                         STRING(ACTIVITY_ACTION_REPLY_CONTEXT_TAG)),
                                                    KEY("data", STRING(ACTIVITY_ACTION_REPLY_DATA)),
                                                    KEY("file", STRING(ACTIVITY_ACTION_REPLY_FILE)),
-#ifdef notyet
                                                    KEY("handler", STRING(ACTIVITY_ACTION_REPLY_HANDLER)),
-#endif
-						KEY("template", STRING(ACTIVITY_ACTION_REPLY_TEMPLATE)))),
-                                        KEY("renegotiate", BOOLEAN(ACTIVITY_ACTION_RENEGOTIATE)))),
+                                                   KEY("template", STRING(ACTIVITY_ACTION_REPLY_TEMPLATE)))),
+                                       KEY("alert",
+                                            OBJECT_ARRAY(ACTIVITY_ACTION_ALERT,
+                                                   KEY("context",
+                                                        INT_RANGE(ACTIVITY_ACTION_ALERT_CONTEXT_ID,
+                                                                  0,
+                                                                  TLMSP_UTIL_CONTEXT_ID_MAX),
+                                                        STRING(ACTIVITY_ACTION_ALERT_CONTEXT_TAG)),
+                                                   KEY("level",
+                                                        ENUM(ACTIVITY_ACTION_ALERT_LEVEL,
+                                                             { "warning", TLMSP_CFG_ACTION_ALERT_LEVEL_WARNING },
+                                                             { "fatal",   TLMSP_CFG_ACTION_ALERT_LEVEL_FATAL } )),
+                                                   KEY("description",
+                                                        ENUM(ACTIVITY_ACTION_ALERT_DESC_ENUM,
+                                                             { "close_notify",                     TLMSP_CFG_ACTION_ALERT_DESC_CLOSE_NOTIFY },
+                                                             { "unexpected_message",               TLMSP_CFG_ACTION_ALERT_DESC_UNEXPECTED_MSG },
+                                                             { "bad_record_mac",                   TLMSP_CFG_ACTION_ALERT_DESC_BAD_RECORD_MAC },
+                                                             { "record_overflow",                  TLMSP_CFG_ACTION_ALERT_DESC_RECORD_OVERFLOW },
+                                                             { "decompression_failure",            TLMSP_CFG_ACTION_ALERT_DESC_DECOMPRESSION_FAIL },
+                                                             { "handshake_failure",                TLMSP_CFG_ACTION_ALERT_DESC_HANDSHAKE_FAIL },
+                                                             { "bad_certificate",                  TLMSP_CFG_ACTION_ALERT_DESC_BAD_CERT },
+                                                             { "unsupported_certificate",          TLMSP_CFG_ACTION_ALERT_DESC_UNSUPPORTED_CERT },
+                                                             { "certificate_revoked",              TLMSP_CFG_ACTION_ALERT_DESC_CERT_REVOKED },
+                                                             { "certificate_expired",              TLMSP_CFG_ACTION_ALERT_DESC_CERT_EXPIRED },
+                                                             { "certificate_unknown",              TLMSP_CFG_ACTION_ALERT_DESC_CERT_UNKNOWN },
+                                                             { "illegal_parameter",                TLMSP_CFG_ACTION_ALERT_DESC_ILLEGAL_PARAM },
+                                                             { "unknown_ca",                       TLMSP_CFG_ACTION_ALERT_DESC_UNKNOWN_CA },
+                                                             { "access_denied",                    TLMSP_CFG_ACTION_ALERT_DESC_ACCESS_DENIED },
+                                                             { "decode_error",                     TLMSP_CFG_ACTION_ALERT_DESC_DECODE_ERROR },
+                                                             { "decrypt_error",                    TLMSP_CFG_ACTION_ALERT_DESC_DECRYPT_ERROR },
+                                                             { "protocol_version",                 TLMSP_CFG_ACTION_ALERT_DESC_PROTOCOL_VERSION },
+                                                             { "insufficient_security",            TLMSP_CFG_ACTION_ALERT_DESC_INSUFF_SECURITY },
+                                                             { "internal_error",                   TLMSP_CFG_ACTION_ALERT_DESC_INTERNAL_ERROR },
+                                                             { "user_canceled",                    TLMSP_CFG_ACTION_ALERT_DESC_USER_CANCELED },
+                                                             { "no_renegotiation",                 TLMSP_CFG_ACTION_ALERT_DESC_NO_RENEGOTIATION },
+                                                             { "unsupported_extension",            TLMSP_CFG_ACTION_ALERT_DESC_UNSUPPORTED_EXT },
+                                                             { "middlebox_route_failure",          TLMSP_CFG_ACTION_ALERT_DESC_MBOX_ROUTE_FAIL },
+                                                             { "middlebox_auth_failure",           TLMSP_CFG_ACTION_ALERT_DESC_MBOX_AUTH_FAIL },
+                                                             { "middlebox_required",               TLMSP_CFG_ACTION_ALERT_DESC_MBOX_REQUIRED },
+                                                             { "unknown_context",                  TLMSP_CFG_ACTION_ALERT_DESC_UNKNOWN_CONTEXT },
+                                                             { "unsupported_context",              TLMSP_CFG_ACTION_ALERT_DESC_UNSUPPORTED_CONTEXT },
+                                                             { "middlebox_key_verify_failure",     TLMSP_CFG_ACTION_ALERT_DESC_MBOX_KEY_VERIFY_FAIL },
+                                                             { "bad_reader_mac",                   TLMSP_CFG_ACTION_ALERT_DESC_BAD_READER_MAC },
+                                                             { "bad_writer_mac",                   TLMSP_CFG_ACTION_ALERT_DESC_BAD_WRITER_MAC },
+                                                             { "middlebox_key_confirmation_fault", TLMSP_CFG_ACTION_ALERT_DESC_MBOX_KEY_CONFIRM_FAULT },
+                                                             { "authentication_required",          TLMSP_CFG_ACTION_ALERT_DESC_AUTH_REQUIRED } ),
+							INT_RANGE(ACTIVITY_ACTION_ALERT_DESC_INT, 0, 255)))),
+                                       KEY("shutdown", BOOLEAN(ACTIVITY_ACTION_SHUTDOWN)),
+                                       KEY("renegotiate", BOOLEAN(ACTIVITY_ACTION_RENEGOTIATE)))),
                            KEY("present", BOOLEAN(ACTIVITY_PRESENT)))),
          KEY("client",
               OBJECT(CLIENT,
@@ -322,8 +366,8 @@ const struct value_type cfg_format =
                                 OBJECT_ARRAY(MIDDLEBOX_CONTEXT,
                                              KEY("which",
                                                   INT_ARRAY_RANGE(MIDDLEBOX_CONTEXT_WHICH_IDS,
-                                                                  TLMSP_CONTEXT_ID_MIN,
-                                                                  TLMSP_CONTEXT_ID_MAX),
+                                                                  TLMSP_UTIL_CONTEXT_ID_MIN,
+                                                                  TLMSP_UTIL_CONTEXT_ID_MAX),
                                                   STRING_ARRAY(MIDDLEBOX_CONTEXT_WHICH_TAGS)),
                                              KEY("access",
                                                   ENUM(MIDDLEBOX_CONTEXT_ACCESS,
@@ -931,6 +975,7 @@ fmt_value_tag_name(enum value_tag tag)
 		HANDLE(VALUE_TAG_ACTIVITY_ACTION);
 		HANDLE(VALUE_TAG_ACTIVITY_ACTION_FAULT);
 		HANDLE(VALUE_TAG_ACTIVITY_ACTION_RENEGOTIATE);
+		HANDLE(VALUE_TAG_ACTIVITY_ACTION_SHUTDOWN);
 		HANDLE(VALUE_TAG_ACTIVITY_ACTION_SEND);
 		HANDLE(VALUE_TAG_ACTIVITY_ACTION_SEND_CONTEXT_ID);
 		HANDLE(VALUE_TAG_ACTIVITY_ACTION_SEND_CONTEXT_TAG);
@@ -945,6 +990,12 @@ fmt_value_tag_name(enum value_tag tag)
 		HANDLE(VALUE_TAG_ACTIVITY_ACTION_REPLY_FILE);
 		HANDLE(VALUE_TAG_ACTIVITY_ACTION_REPLY_HANDLER);
 		HANDLE(VALUE_TAG_ACTIVITY_ACTION_REPLY_TEMPLATE);
+		HANDLE(VALUE_TAG_ACTIVITY_ACTION_ALERT);
+		HANDLE(VALUE_TAG_ACTIVITY_ACTION_ALERT_CONTEXT_ID);
+		HANDLE(VALUE_TAG_ACTIVITY_ACTION_ALERT_CONTEXT_TAG);
+		HANDLE(VALUE_TAG_ACTIVITY_ACTION_ALERT_LEVEL);
+		HANDLE(VALUE_TAG_ACTIVITY_ACTION_ALERT_DESC_ENUM);
+		HANDLE(VALUE_TAG_ACTIVITY_ACTION_ALERT_DESC_INT);
 		HANDLE(VALUE_TAG_ACTIVITY_PRESENT);
 		HANDLE(VALUE_TAG_CLIENT);
 		HANDLE(VALUE_TAG_CLIENT_VERSION_SINGLE);

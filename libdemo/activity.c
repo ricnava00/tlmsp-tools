@@ -52,7 +52,7 @@ struct match_groups {
 };
 
 struct demo_activity_match_state {
-	bool contexts[TLMSP_CONTEXT_ID_MAX + 1];
+	bool contexts[TLMSP_UTIL_CONTEXT_ID_LUT_SIZE];
 	struct tlmsp_cfg_activity *activity;
 	struct container_queue_range match_range;
 	size_t match_offset;
@@ -95,6 +95,9 @@ static bool demo_activity_queue_payload(struct demo_connection *conn,
                                         struct tlmsp_cfg_payload *payload,
                                         struct match_groups *match_groups,
                                         bool present);
+static bool demo_activity_queue_alert(struct demo_connection *conn,
+                                      struct tlmsp_cfg_alert *alert,
+                                      bool present);
 static void demo_activity_time_triggered_cb(EV_P_ ev_timer *w, int revents);
 static bool demo_activity_get_payload_data(struct demo_connection *conn,
                                            struct tlmsp_cfg_payload *payload,
@@ -349,6 +352,42 @@ demo_activity_queue_payload(struct demo_connection *conn,
 	if ((data != NULL) && free_data)
 		free((void *)data);
 	return (result);
+}
+
+static bool
+demo_activity_queue_alert(struct demo_connection *conn,
+    struct tlmsp_cfg_alert *alert, bool present)
+{
+	struct container_queue *q = &conn->write_queue;
+	SSL *ssl = q->conn->ssl;
+	TLMSP_Container *container;
+	tlmsp_context_id_t context_id;
+
+	context_id = alert->context ? alert->context->id : 0;
+	if (present)
+		demo_conn_present(conn, "Sending %s alert %d in context %u",
+		    alert->level == TLMSP_CFG_ACTION_ALERT_LEVEL_WARNING ?
+		    "warning" : "fatal", alert->description, context_id);
+
+	if (!TLMSP_container_create_alert(ssl, &container, context_id,
+		(alert->level << 8) | alert->description)) {
+		demo_conn_print_error_ssl_errq(conn,
+		    "Failed to create container for alert");
+		return (false);
+	}
+
+	if (!container_queue_add(q, container)) {
+		demo_conn_print_error(conn,
+		    "Failed to add alert container to queue");
+		TLMSP_container_free(ssl, container);
+		return (false);
+	}
+
+	demo_conn_log(2, conn, "Sending %s alert %d in context %u",
+	    alert->level == TLMSP_CFG_ACTION_ALERT_LEVEL_WARNING ?
+	    "warning" : "fatal", alert->description, context_id);
+
+	return (true);
 }
 
 static void
@@ -1357,12 +1396,28 @@ demo_activity_apply_actions(struct demo_connection *activity_conn,
 			if (!demo_activity_queue_payload(outbound_conn,
 				&action->send, match_groups, activity->present))
 				return (false);
+		} else if (action->alert.level != TLMSP_CFG_ACTION_ALERT_LEVEL_NONE) {
+			if (!demo_activity_queue_alert(send_conn,
+				&action->alert, activity->present))
+				return (false);
 		} else if (action->renegotiate) {
 			if (!SSL_renegotiate_abbreviated(activity_conn->ssl)) {
 				demo_conn_print_error_ssl_errq(activity_conn,
 				    "Failed to schedule a renegotiation");
 				return (false);
 			}
+		} else if (action->shutdown) {
+			/*
+			 * This will put the SSL into a state where our next
+			 * attempt to read a container will return the
+			 * appropriate WANT_WRITE, and we will transition into
+			 * flushing the write part of the BIO.  Therefore, we
+			 * just ignore any error here.
+			 *
+			 * We could narrow it to just ignore the expected
+			 * errors.
+			 */
+			(void)SSL_shutdown(activity_conn->ssl);
 		}
 	}
 

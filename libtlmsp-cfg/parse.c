@@ -15,6 +15,7 @@
 
 #include "format.h"
 #include "libtlmsp-cfg.h"
+#include "libtlmsp-util.h"
 #include "parse.h"
 #include "trace.h"
 
@@ -45,11 +46,11 @@ struct auto_array_state {
 #define auto_array_elements(s)	((s)->next_index)
 
 /* direct-indexed by context ID */
-typedef bool context_id_array_t[TLMSP_CONTEXT_ID_MAX + 1]; 	
+typedef bool context_id_array_t[TLMSP_UTIL_CONTEXT_ID_LUT_SIZE]; 	
 /* direct-indexed by context ID */
-typedef struct tlmsp_cfg_context *context_ptr_array_t[TLMSP_CONTEXT_ID_MAX + 1];
+typedef struct tlmsp_cfg_context *context_ptr_array_t[TLMSP_UTIL_CONTEXT_ID_LUT_SIZE];
 /* direct-indexed by context ID */
-typedef enum tlmsp_cfg_context_access context_access_array_t[TLMSP_CONTEXT_ID_MAX + 1]; 	
+typedef enum tlmsp_cfg_context_access context_access_array_t[TLMSP_UTIL_CONTEXT_ID_LUT_SIZE]; 	
 
 /* for building a list of context pointers in a config object */
 struct context_list {
@@ -547,6 +548,8 @@ handle_value_tag_start_do(struct iteration_state *state, enum value_tag tag,
 	case VALUE_TAG_ACTIVITY_ACTION_RENEGOTIATE:
         case VALUE_TAG_ACTIVITY_ACTION_SEND:
 	case VALUE_TAG_ACTIVITY_ACTION_REPLY:
+	case VALUE_TAG_ACTIVITY_ACTION_ALERT:
+	case VALUE_TAG_ACTIVITY_ACTION_SHUTDOWN:
 		if ((tag == VALUE_TAG_ACTIVITY_ACTION_FAULT) &&
 		    !check_one_tag(state, tag, "fault", "action"))
 			return (false);
@@ -582,6 +585,13 @@ handle_value_tag_start_do(struct iteration_state *state, enum value_tag tag,
 			ERRBUF("only one data source per payload specification is supported");
 			return (false);
 		}
+		break;
+        case VALUE_TAG_ACTIVITY_ACTION_ALERT_CONTEXT_ID:
+	case VALUE_TAG_ACTIVITY_ACTION_ALERT_CONTEXT_TAG:
+	case VALUE_TAG_ACTIVITY_ACTION_ALERT_LEVEL:
+	case VALUE_TAG_ACTIVITY_ACTION_ALERT_DESC_ENUM:
+	case VALUE_TAG_ACTIVITY_ACTION_ALERT_DESC_INT:
+		/* nothing to do */
 		break;
 	case VALUE_TAG_ACTIVITY_PRESENT:
 		/* nothing to do */
@@ -718,6 +728,7 @@ handle_value_tag_finish(struct iteration_state *state, enum value_tag tag,
 {
 	struct tlmsp_cfg *cfg;
 	struct tlmsp_cfg_context *context;
+	const char *tag_str;
 	unsigned int i;
 	unsigned int context_id;
 	
@@ -862,6 +873,9 @@ handle_value_tag_finish(struct iteration_state *state, enum value_tag tag,
         case VALUE_TAG_ACTIVITY_ACTION_RENEGOTIATE:
 		state->cur_action->renegotiate = value->type_boolean;
 		break;
+	case VALUE_TAG_ACTIVITY_ACTION_SHUTDOWN:
+		state->cur_action->shutdown = value->type_boolean;
+		break;
         case VALUE_TAG_ACTIVITY_ACTION_SEND:
 	case VALUE_TAG_ACTIVITY_ACTION_REPLY:
 		if (!check_cfg_payload(state,
@@ -909,6 +923,61 @@ handle_value_tag_finish(struct iteration_state *state, enum value_tag tag,
 		if (!set_cfg_payload_template(state,
 			&state->cur_action->send, value->type_string))
 			return (false);
+		break;
+        case VALUE_TAG_ACTIVITY_ACTION_ALERT:
+		if (!(HAS_VALUE_TAG(ACTIVITY_ACTION_ALERT_CONTEXT_ID) ||
+			HAS_VALUE_TAG(ACTIVITY_ACTION_ALERT_CONTEXT_TAG))) {
+			ERRBUF("alert requires 'context' key");
+			return (false);
+		}
+		if (!HAS_VALUE_TAG(ACTIVITY_ACTION_ALERT_LEVEL)) {
+			ERRBUF("alert requires 'level' key");
+			return (false);
+		}
+		if (!(HAS_VALUE_TAG(ACTIVITY_ACTION_ALERT_DESC_ENUM) ||
+			HAS_VALUE_TAG(ACTIVITY_ACTION_ALERT_DESC_INT))) {
+			ERRBUF("alert requires 'description' key");
+			return (false);
+		}
+		break;
+        case VALUE_TAG_ACTIVITY_ACTION_ALERT_CONTEXT_ID:
+		context_id = value->type_int;
+		if (context_id != 0) {
+			if (!state->context_id_in_use[context_id]) {
+				ERRBUF("context ID %u does not exist",
+				    context_id);
+				return (false);
+			}
+			state->cur_action->alert.context =
+			    state->context_ptrs[context_id];
+		} else
+			state->cur_action->alert.context = NULL;
+		break;
+	case VALUE_TAG_ACTIVITY_ACTION_ALERT_CONTEXT_TAG:
+		tag_str = value->type_string;
+		context = get_context_by_tag(state->cfg, tag_str, false);
+		if (context == NULL) {
+			if (get_context_by_tag(state->cfg, tag_str, true)) {
+				ERRBUF("cannot use context tag %s in 'alert' "
+				    "- it represents multiple context IDs",
+				    tag_str);
+				return (false);
+			} else {
+				ERRBUF("unknown context tag '%s' in 'alert'",
+				    tag_str);
+				return (false);
+			}
+		}
+		state->cur_action->alert.context = context;
+		break;
+	case VALUE_TAG_ACTIVITY_ACTION_ALERT_LEVEL:
+		state->cur_action->alert.level = value->type_enum.e;
+		break;
+	case VALUE_TAG_ACTIVITY_ACTION_ALERT_DESC_ENUM:
+		state->cur_action->alert.description = value->type_enum.e;
+		break;
+	case VALUE_TAG_ACTIVITY_ACTION_ALERT_DESC_INT:
+		state->cur_action->alert.description = value->type_int;
 		break;
         case VALUE_TAG_ACTIVITY_PRESENT:
 		state->cur_activity->present = value->type_boolean;
@@ -988,9 +1057,9 @@ handle_value_tag_finish(struct iteration_state *state, enum value_tag tag,
 			return (false);
 		break;
 	case VALUE_TAG_CONTEXT:
-		if (state->cur_context->id == TLMSP_CONTEXT_ID_RESERVED) {
+		if (state->cur_context->id == TLMSP_UTIL_CONTEXT_ID_RESERVED) {
 			state->cur_context->id = assign_context_id(state);
-			if (state->cur_context->id == TLMSP_CONTEXT_ID_RESERVED) {
+			if (state->cur_context->id == TLMSP_UTIL_CONTEXT_ID_RESERVED) {
 				ERRBUF("unable to assign context ID");
 				return (false);
 			}
@@ -1085,7 +1154,7 @@ handle_value_tag_finish(struct iteration_state *state, enum value_tag tag,
 		/*
 		 * Replicate by ID
 		 */
-		for (i = TLMSP_CONTEXT_ID_MIN; i <= TLMSP_CONTEXT_ID_MAX; i++) {
+		for (i = TLMSP_UTIL_CONTEXT_ID_MIN; i <= TLMSP_UTIL_CONTEXT_ID_MAX; i++) {
 			if (!state->middlebox_context_replicate_ids[i])
 				continue;
 			if (!add_middlebox_context(state))
@@ -1278,7 +1347,7 @@ static void
 initialize_cfg_context(struct tlmsp_cfg_context *cfg)
 {
 
-	cfg->id = TLMSP_CONTEXT_ID_RESERVED;
+	cfg->id = TLMSP_UTIL_CONTEXT_ID_RESERVED;
 	cfg->tag = "";
 	cfg->comment = "";
 	cfg->purpose = "";
@@ -1291,16 +1360,16 @@ assign_context_id(struct iteration_state *state)
 	unsigned int i;
 
 	if (state->cfg->num_contexts ==
-	    (TLMSP_CONTEXT_ID_MAX - TLMSP_CONTEXT_ID_MIN + 1))
+	    (TLMSP_UTIL_CONTEXT_ID_MAX - TLMSP_UTIL_CONTEXT_ID_MIN + 1))
 		return (false);
 	
-	for (i = TLMSP_CONTEXT_ID_MIN; i <= TLMSP_CONTEXT_ID_MAX; i++)
+	for (i = TLMSP_UTIL_CONTEXT_ID_MIN; i <= TLMSP_UTIL_CONTEXT_ID_MAX; i++)
 		if (!state->context_id_in_use[i]) {
 			state->context_id_in_use[i] = true;
 			return (i);
 		}
 
-	return (TLMSP_CONTEXT_ID_RESERVED);
+	return (TLMSP_UTIL_CONTEXT_ID_RESERVED);
 }
 
 static void

@@ -7,29 +7,15 @@
 #ifndef _LIBTLMSP_CFG_H_
 #define _LIBTLMSP_CFG_H_
 
+#include <limits.h>
 #include <stdbool.h>
 #include <stdint.h>
-
-#include <openssl/tlmsp.h>
 
 
 /* Protocol version */
 #define TLMSP_CFG_PROTO_VERSION(major, minor)	((major << 8) | (minor))
 #define TLMSP_CFG_PROTO_VERSION_MAJOR(ver)	((ver) >> 8)
 #define TLMSP_CFG_PROTO_VERSION_MINOR(ver)	((ver) & 0xff)
-
-#define TLMSP_CONTEXT_ID_RESERVED	0
-#define TLMSP_CONTEXT_ID_MIN		1
-#define TLMSP_CONTEXT_ID_MAX		255
-
-#define TLMSP_MIDDLEBOX_ID_RESERVED	0
-#define TLMSP_MIDDLEBOX_ID_CLIENT	1
-#define TLMSP_MIDDLEBOX_ID_SERVER	2
-#define TLMSP_MIDDLEBOX_ID_MIN		3
-#define TLMSP_MIDDLEBOX_ID_MAX		255
-
-#define TLMSP_MAX_MIDDLEBOXES		(TLMSP_MIDDLEBOX_ID_MAX -	\
-					 TLMSP_MIDDLEBOX_ID_MIN + 1)
 
 struct tlmsp_cfg_buf {
 	const uint8_t *p;
@@ -120,7 +106,53 @@ struct tlmsp_cfg_activity {
 			TLMSP_CFG_ACTION_FAULT_REORDER,
 		} fault;
 		bool renegotiate;
+		bool shutdown;
 		struct tlmsp_cfg_payload send;
+		struct tlmsp_cfg_alert {
+			/* The context pointer will be NULL for context 0 */
+			struct tlmsp_cfg_context *context;
+			enum {
+				TLMSP_CFG_ACTION_ALERT_LEVEL_NONE,
+				/* Values per RFC 5246 */
+				TLMSP_CFG_ACTION_ALERT_LEVEL_WARNING = 1,
+				TLMSP_CFG_ACTION_ALERT_LEVEL_FATAL = 2,
+			} level;
+			enum {
+				/* Values per RFC 5246 and ETSI TS 103 523-2 */
+				TLMSP_CFG_ACTION_ALERT_DESC_CLOSE_NOTIFY = 0,
+				TLMSP_CFG_ACTION_ALERT_DESC_UNEXPECTED_MSG = 10,
+				TLMSP_CFG_ACTION_ALERT_DESC_BAD_RECORD_MAC = 20,
+				TLMSP_CFG_ACTION_ALERT_DESC_RECORD_OVERFLOW = 22,
+				TLMSP_CFG_ACTION_ALERT_DESC_DECOMPRESSION_FAIL = 30,
+				TLMSP_CFG_ACTION_ALERT_DESC_HANDSHAKE_FAIL = 40,
+				TLMSP_CFG_ACTION_ALERT_DESC_BAD_CERT = 42,
+				TLMSP_CFG_ACTION_ALERT_DESC_UNSUPPORTED_CERT = 43,
+				TLMSP_CFG_ACTION_ALERT_DESC_CERT_REVOKED = 44,
+				TLMSP_CFG_ACTION_ALERT_DESC_CERT_EXPIRED = 45,
+				TLMSP_CFG_ACTION_ALERT_DESC_CERT_UNKNOWN = 46,
+				TLMSP_CFG_ACTION_ALERT_DESC_ILLEGAL_PARAM = 47,
+				TLMSP_CFG_ACTION_ALERT_DESC_UNKNOWN_CA = 48,
+				TLMSP_CFG_ACTION_ALERT_DESC_ACCESS_DENIED = 49,
+				TLMSP_CFG_ACTION_ALERT_DESC_DECODE_ERROR = 50,
+				TLMSP_CFG_ACTION_ALERT_DESC_DECRYPT_ERROR = 51,
+				TLMSP_CFG_ACTION_ALERT_DESC_PROTOCOL_VERSION = 70,
+				TLMSP_CFG_ACTION_ALERT_DESC_INSUFF_SECURITY = 71,
+				TLMSP_CFG_ACTION_ALERT_DESC_INTERNAL_ERROR = 80,
+				TLMSP_CFG_ACTION_ALERT_DESC_USER_CANCELED = 90,
+				TLMSP_CFG_ACTION_ALERT_DESC_NO_RENEGOTIATION = 100,
+				TLMSP_CFG_ACTION_ALERT_DESC_UNSUPPORTED_EXT = 110,
+				TLMSP_CFG_ACTION_ALERT_DESC_MBOX_ROUTE_FAIL = 170,
+				TLMSP_CFG_ACTION_ALERT_DESC_MBOX_AUTH_FAIL = 171,
+				TLMSP_CFG_ACTION_ALERT_DESC_MBOX_REQUIRED = 172,
+				TLMSP_CFG_ACTION_ALERT_DESC_UNKNOWN_CONTEXT = 174,
+				TLMSP_CFG_ACTION_ALERT_DESC_UNSUPPORTED_CONTEXT = 175,
+				TLMSP_CFG_ACTION_ALERT_DESC_MBOX_KEY_VERIFY_FAIL = 176,
+				TLMSP_CFG_ACTION_ALERT_DESC_BAD_READER_MAC = 177,
+				TLMSP_CFG_ACTION_ALERT_DESC_BAD_WRITER_MAC = 178,
+				TLMSP_CFG_ACTION_ALERT_DESC_MBOX_KEY_CONFIRM_FAULT = 179,
+				TLMSP_CFG_ACTION_ALERT_DESC_AUTH_REQUIRED = 180,
+			} description;
+		} alert;
 	} *actions;
 	bool present;
 };
@@ -202,16 +234,6 @@ const struct tlmsp_cfg_middlebox *tlmsp_cfg_get_middlebox_by_tag(const struct tl
 
 char *tlmsp_cfg_get_client_first_hop_address(const struct tlmsp_cfg *cfg, bool reconnect,
                                              bool emulated_transparency, int *address_type);
-
-TLMSP_Contexts *tlmsp_cfg_contexts_to_openssl(const struct tlmsp_cfg *cfg);
-bool tlmsp_cfg_middlebox_contexts_to_openssl(const struct tlmsp_cfg_middlebox *mb, TLMSP_ContextAccess **ca);
-TLMSP_Middleboxes *tlmsp_cfg_initial_middlebox_list_to_openssl(const struct tlmsp_cfg*cfg);
-bool tlmsp_cfg_middlebox_contexts_match_openssl(const struct tlmsp_cfg_middlebox *mb,
-                                                const TLMSP_ContextAccess *ca);
-bool tlmsp_cfg_validate_middlebox_list_client_openssl(const struct tlmsp_cfg *cfg,
-                                                      TLMSP_Middleboxes *middleboxes);
-bool tlmsp_cfg_process_middlebox_list_server_openssl(const struct tlmsp_cfg *cfg,
-                                                     TLMSP_Middleboxes *middleboxes);
 
 void tlmsp_cfg_print(int fd, const struct tlmsp_cfg *cfg);
 void tlmsp_cfg_free(const struct tlmsp_cfg *cfg);

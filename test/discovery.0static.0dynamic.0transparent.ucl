@@ -1,0 +1,12 @@
+context {
+    id = 1
+    tag = ctx1
+}
+
+client {
+    address = tlmsp://localhost
+}
+
+server {
+    address = tlmsp://localhost:10254
+}

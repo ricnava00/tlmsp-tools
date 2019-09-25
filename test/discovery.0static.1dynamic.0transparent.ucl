@@ -1,6 +1,6 @@
 context {
     id = 1
-    tag = context-1
+    tag = ctx1
 }
 
 middlebox {

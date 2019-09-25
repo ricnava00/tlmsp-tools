@@ -78,14 +78,11 @@ demo_splice_create(struct demo_app *app, demo_splice_free_cb_t free_cb,
 bool
 demo_splice_handshake_complete(struct demo_splice *splice)
 {
-	if (!splice->initial_handshake_complete) {
-		splice->initial_handshake_complete = true;
 
-		if (!demo_connection_handshake_complete(splice->to_client))
-			return (false);
-		if (!demo_connection_handshake_complete(splice->to_server))
-			return (false);
-	}
+	if (!demo_connection_handshake_complete(splice->to_client))
+		return (false);
+	if (!demo_connection_handshake_complete(splice->to_server))
+		return (false);
 
 	return(true);
 }
@@ -93,11 +90,12 @@ demo_splice_handshake_complete(struct demo_splice *splice)
 bool
 demo_splice_init_io_to_client(struct demo_splice *splice, SSL_CTX *ssl_ctx,
     int sock, struct ev_loop *loop, demo_connection_failed_cb_t fail_cb,
-    demo_connection_cb_t cb, int initial_events)
+    demo_connection_connected_cb_t connected_cb, demo_connection_cb_t cb,
+    int initial_events)
 {
 
 	if (!demo_connection_init_io(splice->to_client, ssl_ctx, sock, loop,
-		fail_cb, cb, initial_events))
+		fail_cb, connected_cb, cb, initial_events))
 		return (false);
 
 	return (true);
@@ -106,19 +104,19 @@ demo_splice_init_io_to_client(struct demo_splice *splice, SSL_CTX *ssl_ctx,
 bool
 demo_splice_start_io_to_client(struct demo_splice *splice)
 {
-	demo_connection_set_phase(splice->to_client,
-	    DEMO_CONNECTION_PHASE_HANDSHAKE);
+
 	return (demo_connection_start_io(splice->to_client));
 }
 
 bool
 demo_splice_init_io_to_server(struct demo_splice *splice, SSL_CTX *ssl_ctx,
     int sock, struct ev_loop *loop, demo_connection_failed_cb_t fail_cb,
-    demo_connection_cb_t cb, int initial_events)
+    demo_connection_connected_cb_t connected_cb, demo_connection_cb_t cb,
+    int initial_events)
 {
 
 	if (!demo_connection_init_io(splice->to_server, ssl_ctx, sock, loop,
-		fail_cb, cb, initial_events))
+		fail_cb, connected_cb, cb, initial_events))
 		return (false);
 
 	return (true);
@@ -127,8 +125,7 @@ demo_splice_init_io_to_server(struct demo_splice *splice, SSL_CTX *ssl_ctx,
 bool
 demo_splice_start_io_to_server(struct demo_splice *splice)
 {
-	demo_connection_set_phase(splice->to_server,
-	    DEMO_CONNECTION_PHASE_HANDSHAKE);
+
 	return (demo_connection_start_io(splice->to_server));
 }
 

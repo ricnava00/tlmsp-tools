@@ -32,6 +32,8 @@ static void print_activity_action(int fd, unsigned int indent,
                                       const struct tlmsp_cfg_action *cfg);
 static void print_payload(int fd, unsigned int indent,
                           const struct tlmsp_cfg_payload *cfg);
+static void print_alert(int fd, unsigned int indent,
+                        const struct tlmsp_cfg_alert *cfg);
 static void print_middlebox_context(int fd, unsigned int indent,
                                     const struct tlmsp_cfg_middlebox_context *cfg);
 static void print_boolean(int fd, bool value);
@@ -131,6 +133,7 @@ print_activity_action(int fd, unsigned int indent, const struct tlmsp_cfg_action
 		    VALUE_TAG_ACTIVITY_ACTION_FAULT, cfg->fault);
 #endif
 	print_payload(fd, indent + 1, &cfg->send);
+	print_alert(fd, indent + 1, &cfg->alert);
 	indent_print(fd, indent,              "}\n");
 }
 
@@ -161,6 +164,22 @@ print_payload(int fd, unsigned int indent, const struct tlmsp_cfg_payload *cfg)
 		print_template_key(fd, indent + 1,  "template", &cfg->param.template);
 		break;
 	}
+	indent_print(fd, indent,        "}\n");
+}
+
+static void
+print_alert(int fd, unsigned int indent, const struct tlmsp_cfg_alert *cfg)
+{
+
+	if (cfg->level == TLMSP_CFG_ACTION_ALERT_LEVEL_NONE)
+		return;
+
+	indent_print(fd, indent,                  "alert {\n");
+	print_int_key(fd, indent + 1,               "context", cfg->context->id);
+	print_enum_key(fd, indent + 1,              "level",
+	    VALUE_TAG_ACTIVITY_ACTION_ALERT_LEVEL, cfg->level);
+	print_enum_key(fd, indent + 1,              "description",
+	    VALUE_TAG_ACTIVITY_ACTION_ALERT_DESC_ENUM, cfg->description);
 	indent_print(fd, indent,        "}\n");
 }
 

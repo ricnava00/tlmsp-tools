@@ -1,0 +1,26 @@
+context {
+    id = 1
+    tag = ctx1
+}
+
+middlebox {
+    tag = mbox1
+    address = tlmsp://localhost:10002
+    transparent = no
+    discovered = yes
+}
+
+middlebox {
+    tag = mbox2
+    address = tlmsp://localhost:10003
+    transparent = no
+    discovered = no
+}
+
+client {
+    address = tlmsp://localhost
+}
+
+server {
+    address = tlmsp://localhost:10254
+}

@@ -70,6 +70,8 @@ static void accept_cb(EV_P_ ev_io *w, int revents);
 static bool new_splice(struct middlebox_state *middlebox, int sock);
 static void free_splice_cb(void *app_data);
 static void connection_died(struct demo_connection *conn);
+static bool check_connection(struct demo_connection *conn);
+static void connected_cb(struct demo_connection *conn);
 static void conn_cb(EV_P_ ev_io *w, int revents);
 static int read_containers(struct demo_connection *conn);
 static int write_containers(struct demo_connection *conn);
@@ -346,8 +348,8 @@ new_splice(struct middlebox_state *middlebox, int sock)
 	splice_state->splice = splice;
 	
 	if (!demo_splice_init_io_to_client(splice, middlebox->ssl_ctx, sock,
-		middlebox->loop, (demo_connection_failed_cb_t)connection_died,
-		conn_cb, EV_READ))
+		middlebox->loop, connection_died, connected_cb, conn_cb,
+		EV_READ))
 		goto error;
 	TLMSP_set_address_match_cb_instance(splice->to_client->ssl, address_match_cb,
 	    middlebox);
@@ -376,6 +378,15 @@ static void
 connection_died(struct demo_connection *conn)
 {
 	struct demo_splice *splice = conn->splice;
+	
+	demo_splice_stop_io(splice);
+	demo_splice_free(splice);
+}
+
+static bool
+check_connection(struct demo_connection *conn)
+{
+	struct demo_splice *splice = conn->splice;
 	struct splice_state *splice_state = splice->app_data;
 	
 	/*
@@ -384,20 +395,16 @@ connection_died(struct demo_connection *conn)
 	 * replace this one.
 	 */
 	if (splice_state->reconnect_state != NULL) {
-		demo_connection_stop_io(conn);
-		if (!new_outbound_connection(splice,
-			splice_state->reconnect_state))
-			demo_conn_print_error(conn,
-			    "Failed to create replacement connection");
-		demo_connection_free(conn);
-	} else if (conn->io_error || !conn->read_eof) {
-		demo_splice_stop_io(splice);
-		demo_splice_free(splice);
+		/* XXX not yet supported */
+		connection_died(conn);
+		return (false);
+	} else if (!conn->read_eof) {
+		connection_died(conn);
+		return (false);
 	} else { /* read_eof is set */
 		if (conn->other_side->read_eof) {
-			demo_splice_stop_io(splice);
-			demo_splice_free(splice);
-			return;
+			connection_died(conn);
+			return (false);
 		}
 
 		/*
@@ -425,10 +432,28 @@ connection_died(struct demo_connection *conn)
 			 */
 			demo_conn_log(2, conn, "Flushing all containers in "
 			    "read queue to other side");
+			/*
+			 * container_queue_drain() will always arrange a
+			 * callback for the next writable event on the
+			 * other_side, which will then drive whatever write
+			 * queue drain and shutdown behavior is required.
+			 */
 			container_queue_drain(&conn->read_queue,
 			    &conn->other_side->write_queue);
 		}
 	}
+
+	return (true);
+}
+
+static void
+connected_cb(struct demo_connection *conn)
+{
+	struct demo_splice *splice = conn->splice;
+	struct splice_state *splice_state = splice->app_data;
+	struct middlebox_state *middlebox = splice_state->middlebox;
+
+	SET_LOG_TAG(middlebox);
 }
 
 static void
@@ -451,9 +476,8 @@ conn_cb(EV_P_ ev_io *w, int revents)
 
 	if (revents & EV_ERROR) {
 		demo_conn_print_error(conn, "Socket error");
-		conn->io_error = true;
 		connection_died(conn);
-		goto done;
+		return;
 	}
 
 	switch (conn->phase) {
@@ -464,16 +488,15 @@ do_handshake:
 		switch (result) {
 		case 0:
 			demo_conn_print_error(conn, "Handshake terminated by protocol");
-			conn->io_error = true;
 			connection_died(conn);
+			return;
 			break;
 		case 1:
 			demo_conn_log(1, conn, "Handshake complete");
-			demo_connection_set_phase(conn, DEMO_CONNECTION_PHASE_APPLICATION);
 			demo_connection_wait_for(conn, EV_READ);
 			if (!demo_splice_handshake_complete(splice)) {
-				conn->io_error = true;
 				connection_died(conn);
+				return;
 			}
 			break;
 		default:
@@ -485,8 +508,8 @@ do_handshake:
 				 * re-enter handshake.
 				 */
 				if (!new_outbound_connection(splice, NULL)) {
-					conn->io_error = true;
 					connection_died(conn);
+					return;
 				} else
 					goto do_handshake;
 				break;
@@ -498,7 +521,8 @@ do_handshake:
 				 */
 				splice_state->reconnect_state =
 				    TLMSP_get_reconnect_state(conn->ssl);
-				connection_died(splice->to_server);
+				if (!check_connection(splice->to_server))
+					return;
 				break;
 			case SSL_ERROR_WANT_READ:
 				demo_conn_log(5, conn, "SSL_ERROR_WANT_READ");
@@ -516,8 +540,8 @@ do_handshake:
 			default:
 				demo_conn_print_error_ssl(conn, ssl_error,
 				    "Handshake terminated due to fatal error");
-				conn->io_error = true;
 				connection_died(conn);
+				return;
 				break;
 			}
 			break;
@@ -532,8 +556,8 @@ do_handshake:
 		if (pending_writes) {
 			switch (write_containers(conn)) {
 			case -1:
-				connection_died(conn);
-				return;
+				if (!check_connection(conn))
+					return;
 				break;
 			case 1:
 				demo_connection_set_phase(conn,
@@ -545,11 +569,14 @@ do_handshake:
 			 * Update pending_writes - we may have drained them all.
 			 */
 			pending_writes = demo_connection_writes_pending(conn);
-			if (!pending_writes && conn->other_side->read_eof) {
-				demo_conn_log(1, conn, "Shutting down writes");
-				demo_connection_shutdown(conn);
-			}
 		}
+		/*
+		 * Propagate upstream read-side shutdown downstream.
+		 * demo_connection_shutdown() is idempotent, so we don't
+		 * need to sort out whether it's been invoked already.
+		 */
+		if (!pending_writes && conn->other_side->read_eof)
+			demo_connection_shutdown(conn);
 
 		/*
 		 * If we are out of pending write data, do some reading.
@@ -557,8 +584,8 @@ do_handshake:
 		if (!pending_writes) {
 			switch (read_containers(conn)) {
 			case -1:
-				connection_died(conn);
-				return;
+				if (!check_connection(conn))
+					return;
 				break;
 			case 1:
 				demo_connection_set_phase(conn,
@@ -578,15 +605,11 @@ do_handshake:
 	default:
 		demo_conn_print_error(conn,
 		    "Unexpected connection phase %d", conn->phase);
-		conn->io_error = true;
 		connection_died(conn);
+		return;
 		break;
 	}
 
-done:
-	/*
-	 * If connection_died() was called, this will do nothing.
-	 */
 	demo_splice_resume_io(splice);
 }
 
@@ -631,6 +654,8 @@ read_containers(struct demo_connection *conn)
 				demo_conn_log(3, conn, "Container marked deleted");
 			else if (!TLMSP_container_readable(container))
 				demo_conn_log(3, conn, "Container is opaque");
+			else if (TLMSP_container_alert(container, NULL) == 1)
+				demo_conn_log(3, conn, "Container is an alert");
 			else
 				demo_conn_log_buf(3, conn,
 				    TLMSP_container_get_data(container),
@@ -705,6 +730,8 @@ write_containers(struct demo_connection *conn)
 			demo_conn_log(3, conn, "Container marked deleted");
 		else if (!TLMSP_container_readable(container))
 			demo_conn_log(3, conn, "Container is opaque");
+		else if (TLMSP_container_alert(container, NULL) == 1)
+			demo_conn_log(3, conn, "Container is an alert");
 		else
 			demo_conn_log_buf(3, conn,
 			    TLMSP_container_get_data(container),
@@ -732,7 +759,6 @@ write_containers(struct demo_connection *conn)
 			default:
 				demo_conn_print_error_ssl(conn, ssl_error,
 				    "Connection terminated due to fatal write error");
-				conn->io_error = true;
 				result = -1;
 				break;
 			}
@@ -850,8 +876,8 @@ new_outbound_connection(struct demo_splice *splice,
 	}
 
 	if (!demo_splice_init_io_to_server(splice, middlebox->ssl_ctx, sock,
-		middlebox->loop, (demo_connection_failed_cb_t)connection_died,
-		conn_cb, EV_READ))
+		middlebox->loop, connection_died, connected_cb, conn_cb,
+		EV_READ))
 		goto error;
 	demo_splice_start_io_to_server(splice);
 
@@ -903,12 +929,12 @@ int main(int argc, char **argv)
 	bool force_presentation;
 	bool has_config;
 	bool has_tag;
-	const char *tags[TLMSP_MAX_MIDDLEBOXES];
+	const char *tags[TLMSP_UTIL_MAX_MIDDLEBOXES];
 	unsigned int num_tags;
 	unsigned int i;
 	struct ev_loop *loop;
 	const struct tlmsp_cfg *cfg;
-	struct middlebox_state *middleboxes[TLMSP_MAX_MIDDLEBOXES];
+	struct middlebox_state *middleboxes[TLMSP_UTIL_MAX_MIDDLEBOXES];
 	unsigned int num_middleboxes;
 
 	/*
@@ -964,9 +990,9 @@ int main(int argc, char **argv)
 			force_presentation = true;
 			break;
 		case OPT_CONFIG_TAG:
-			if (num_tags == TLMSP_MAX_MIDDLEBOXES) {
+			if (num_tags == TLMSP_UTIL_MAX_MIDDLEBOXES) {
 				demo_print_error("There can be no more than %u "
-				    "middleboxes", TLMSP_MAX_MIDDLEBOXES);
+				    "middleboxes", TLMSP_UTIL_MAX_MIDDLEBOXES);
 				exit(1);
 			}
 			for (i = 0; i < num_tags; i++) {
@@ -1023,6 +1049,11 @@ int main(int argc, char **argv)
 			exit(1);
 		}
 		num_tags = cfg->num_middleboxes;
+		if (num_tags > TLMSP_UTIL_MAX_MIDDLEBOXES) {
+			demo_print_error("There can be no more than %u "
+			    "middleboxes", TLMSP_UTIL_MAX_MIDDLEBOXES);
+			exit(1);
+		}
 		for (i = 0; i < num_tags; i++)
 			tags[i] = cfg->middleboxes[i].tag;
 	}

@@ -20,6 +20,7 @@
 #include <inttypes.h>
 #include <libgen.h>
 #include <libtlmsp-cfg.h>
+#include <libtlmsp-cfg-openssl.h>
 #include <libtlmsp-util.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -61,7 +62,8 @@ static void free_client_cb(void *app_data);
 static bool new_connection(struct client_state *client,
 	                   const TLMSP_ReconnectState *reconnect_state);
 static void show_connection_info(void *app_data);
-static int validate_discovery_results(SSL *ssl, void *arg);
+static int validate_discovery_results(SSL *ssl, void *arg,
+                                      TLMSP_Middleboxes *middleboxes);
 static void free_connection_cb(void *app_data);
 static void connection_died(struct demo_connection *conn);
 static void conn_cb(EV_P_ ev_io *w, int revents);
@@ -240,14 +242,14 @@ new_connection(struct client_state *client,
 {
 	struct connection_state *conn_state;
 	struct demo_connection *conn;
-	struct sockaddr *addr;
+	struct sockaddr *addr = NULL;
 	socklen_t addr_len;
 	uint8_t *first_hop_addr = NULL;
 	char *first_hop_addr_str;
 	size_t first_hop_addr_len;
 	int first_hop_addr_type;
 	int sock;
-	
+
 	conn_state = calloc(1, sizeof(*conn_state));
 	if (conn_state == NULL) {
 		demo_print_errno("Failed to allocate connection state");
@@ -351,9 +353,11 @@ new_connection(struct client_state *client,
 		demo_print_errno("Connect failed");
 		goto error;
 	}
+	free(addr);
+	addr = NULL;
 
 	if (!demo_connection_init_io(conn, client->ssl_ctx, sock, client->loop,
-		(demo_connection_failed_cb_t)connection_died, conn_cb, EV_WRITE))
+		connection_died, NULL, conn_cb, EV_WRITE))
 		goto error;
 
 	SSL_set_connect_state(conn->ssl);
@@ -366,7 +370,6 @@ new_connection(struct client_state *client,
 			demo_print_error_ssl_errq("Failed to set reconnect state");
 			goto error;
 		}
-		TLMSP_reconnect_state_free(reconnect_state);
 	}
 
 	demo_connection_start_io(conn);
@@ -374,6 +377,7 @@ new_connection(struct client_state *client,
 	return (true);
 
 error:
+	free(addr);
 	OPENSSL_free(first_hop_addr);
 	demo_connection_free(conn);
 	return (false);
@@ -394,23 +398,19 @@ free_connection_cb(void *app_data)
 	struct connection_state *conn_state = app_data;
 
 	TLMSP_reconnect_state_free(conn_state->reconnect_state);
+	free(conn_state->read_buffer);
 	free(conn_state);
 }
 
 static int
-validate_discovery_results(SSL *ssl, void *arg)
+validate_discovery_results(SSL *ssl, void *arg, TLMSP_Middleboxes *middleboxes)
 {
 	struct demo_connection *conn = arg;
 	const struct tlmsp_cfg *cfg = conn->app->cfg;
-	TLMSP_Middleboxes *middleboxes;
 	int result;
 
-	middleboxes = TLMSP_get_middleboxes_instance(conn->ssl);
-	if (middleboxes == NULL)
-		return (0);
 	result = tlmsp_cfg_validate_middlebox_list_client_openssl(cfg,
 		middleboxes);
-	TLMSP_middleboxes_free(middleboxes);
 	return (result);
 }
 
@@ -440,55 +440,119 @@ static void
 conn_cb(EV_P_ ev_io *w, int revents)
 {
 	struct demo_connection *conn = w->data;
+	struct connection_state *conn_state = conn->app_data;
+	int result;
+	int ssl_error;
 	bool pending_writes;
 
 	demo_connection_pause_io(conn);
 	demo_connection_events_arrived(conn, revents);
 
-	/*
-	 * The general approach is that we prioritize writes over
-	 * reads - we work on pending write data until it is all
-	 * sent, then we return to reading.
-	 *
-	 * In the midst of all this, OpenSSL may ask us to wait for
-	 * read or write events on the socket either directly
-	 * related to reads or writes that we are trying to do, or
-	 * related to internal handling of protocol details (e.g.,
-	 * renegotiation).
-	 */
-
-	/*
-	 * Handle pending writes
-	 */
-	pending_writes = demo_connection_writes_pending(conn);
-	if (pending_writes) {
-		if (!write_containers(conn)) {
+	switch (conn->phase) {
+	case DEMO_CONNECTION_PHASE_HANDSHAKE:
+		result = SSL_connect(conn->ssl);
+		switch (result) {
+		case 0:
+			demo_conn_print_error(conn, "Handshake terminated by protocol");
 			connection_died(conn);
 			return;
+			break;
+		case 1:
+			demo_conn_log(1, conn, "Handshake complete");
+			demo_connection_wait_for(conn, EV_READ);
+			if (!demo_connection_handshake_complete(conn)) {
+				connection_died(conn);
+				return;
+			}
+			break;
+		default:
+			ssl_error = SSL_get_error(conn->ssl, result);
+			switch (ssl_error) {
+			case SSL_ERROR_WANT_RECONNECT:
+				demo_conn_log(5, conn, "SSL_ERROR_WANT_RECONNECT");
+				/*
+				 * Re-establish outbound connection and
+				 * re-enter handshake.
+				 */
+				conn_state->reconnect_state =
+				    TLMSP_get_reconnect_state(conn->ssl);
+				if (conn_state->reconnect_state == NULL)
+					demo_conn_print_error_ssl_errq(conn,
+					    "Reconnect state retrieval failed");
+				connection_died(conn);
+				return;
+				break;
+			case SSL_ERROR_WANT_READ:
+				demo_conn_log(5, conn, "SSL_ERROR_WANT_READ");
+				demo_connection_wait_for(conn, EV_READ);
+				break;
+			case SSL_ERROR_WANT_WRITE:
+				demo_conn_log(5, conn, "SSL_ERROR_WANT_WRITE");
+				demo_connection_wait_for(conn, EV_WRITE);
+				break;
+			default:
+				demo_conn_print_error_ssl(conn, ssl_error,
+				    "Handshake terminated due to fatal error");
+				connection_died(conn);
+				return;
+				break;
+			}
+			break;
 		}
+		break;
+	case DEMO_CONNECTION_PHASE_APPLICATION:
 		/*
-		 * Update pending_writes - we may have drained them all.
+		 * The general approach is that we prioritize writes over
+		 * reads - we work on pending write data until it is all
+		 * sent, then we return to reading.
+		 *
+		 * In the midst of all this, OpenSSL may ask us to wait for
+		 * read or write events on the socket either directly
+		 * related to reads or writes that we are trying to do, or
+		 * related to internal handling of protocol details (e.g.,
+		 * renegotiation).
+		 */
+
+		/*
+		 * Handle pending writes
 		 */
 		pending_writes = demo_connection_writes_pending(conn);
-	}
-
-	/*
-	 * If we are out of pending write data, do some reading.
-	 */
-	if (!pending_writes) {
-		if (!read_containers(conn)) {
-			connection_died(conn);
-			return;
+		if (pending_writes) {
+			if (!write_containers(conn)) {
+				connection_died(conn);
+				return;
+			}
+			/*
+			 * Update pending_writes - we may have drained them all.
+			 */
+			pending_writes = demo_connection_writes_pending(conn);
 		}
+
+		/*
+		 * If we are out of pending write data, do some reading.
+		 */
+		if (!pending_writes) {
+			if (!read_containers(conn)) {
+				connection_died(conn);
+				return;
+			}
+		}
+
+		/*
+		 * If none of the above processing requires a further read
+		 * or write event, wait for new data to arrive.
+		 */
+		if (demo_connection_wait_events(conn) == 0)
+			demo_connection_wait_for(conn, EV_READ);
+		break;
+	default:
+		demo_conn_print_error(conn,
+		    "Unexpected connection phase %d", conn->phase);
+		connection_died(conn);
+		return;
+		break;
 	}
 
-	/*
-	 * If none of the above processing requires a further read
-	 * or write event, wait for new data to arrive.
-	 */
-	if (demo_connection_wait_events(conn) == 0)
-		demo_connection_wait_for(conn, EV_READ);
-	
 	demo_connection_resume_io(conn);
 }
 
@@ -546,7 +610,7 @@ read_containers(struct demo_connection *conn)
 			} else if (!TLMSP_container_readable(container)) {
 				demo_conn_print_error(conn,
 				    "Opaque container unexpectedly received in "
-				    "context %d using containe API", context_id);
+				    "context %d using container API", context_id);
 				TLMSP_container_free(ssl, container);
 				return (false);
 			} else {
@@ -576,12 +640,6 @@ read_containers(struct demo_connection *conn)
 		case SSL_ERROR_WANT_WRITE:
 			demo_conn_log(5, conn, "SSL_ERROR_WANT_WRITE");
 			demo_connection_wait_for(conn, EV_WRITE);
-			break;
-		case SSL_ERROR_WANT_RECONNECT:
-			demo_conn_log(5, conn, "SSL_ERROR_WANT_RECONNECT");
-			conn_state->reconnect_state =
-			    TLMSP_get_reconnect_state(ssl);
-			result = false;
 			break;
 		default:
 			demo_conn_print_error_ssl(conn, ssl_error,
@@ -664,11 +722,6 @@ write_containers(struct demo_connection *conn)
 		case SSL_ERROR_WANT_WRITE:
 			demo_conn_log(5, conn, "SSL_ERROR_WANT_WRITE");
 			demo_connection_wait_for(conn, EV_WRITE);
-			break;
-		case SSL_ERROR_WANT_RECONNECT:
-			demo_conn_log(5, conn, "SSL_ERROR_WANT_RECONNECT");
-			conn_state->reconnect_state = TLMSP_get_reconnect_state(ssl);
-			result = false;
 			break;
 		default:
 			demo_conn_print_error_ssl(conn, ssl_error,

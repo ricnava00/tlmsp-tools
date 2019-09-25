@@ -179,7 +179,7 @@ container_queue_drain(struct container_queue *q, struct container_queue *to)
 		demo_connection_pause_io(other_side);
 	}
 
-		container = container_queue_head(q);
+	container = container_queue_head(q);
 	while (container != NULL) {
 		container_queue_remove_head(q);
 		if (to != NULL)
@@ -188,7 +188,7 @@ container_queue_drain(struct container_queue *q, struct container_queue *to)
 			TLMSP_container_free(q->conn->ssl, container);
 		container = container_queue_head(q);
 	}
-	
+
 	if (to != NULL) {
 		demo_connection_wait_for(other_side, EV_WRITE);
 		demo_connection_resume_io(other_side);

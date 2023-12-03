@@ -9,7 +9,7 @@ AM_CPPFLAGS = \
 	-I$(top_srcdir)/libtlmsp-cfg \
 	-I$(top_srcdir)/libtlmsp-util \
 	-I$(top_srcdir)/libucl/include
-AM_CFLAGS = -Wall -Wextra -Wno-unused-parameter -Wno-strict-aliasing -Werror
+AM_CFLAGS = -Wall -Wextra -Wno-unused-but-set-variable -Wno-unused-parameter -Wno-strict-aliasing -Werror
 
 noinst_PROGRAMS = test-parse
 bin_PROGRAMS = \

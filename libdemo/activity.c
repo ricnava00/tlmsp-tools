@@ -1515,6 +1515,8 @@ demo_activity_drop_or_forward_match_preamble(struct demo_connection *log_conn,
 		    TLMSP_container_context(new_container),
 		    TLMSP_container_length(new_container));
 		container_queue_add_head(read_q, new_container);
+		if(match_range->last==match_range->first)
+			match_range->last = container_queue_head_entry(read_q);
 		match_range->first = container_queue_head_entry(read_q);
 		match_range->first_offset = 0;
 	}

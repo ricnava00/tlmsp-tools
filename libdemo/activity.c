@@ -91,6 +91,10 @@ struct payload_handler_state {
 
 static bool demo_activity_queue_initial(struct demo_connection *from_conn,
                                         bool sends, bool replies);
+static bool demo_activity_log_payload(struct demo_connection *conn,
+                                        struct tlmsp_cfg_payload *payload,
+                                        struct match_groups *match_groups,
+                                        bool present);
 static bool demo_activity_queue_payload(struct demo_connection *conn,
                                         struct tlmsp_cfg_payload *payload,
                                         struct match_groups *match_groups,
@@ -99,6 +103,11 @@ static bool demo_activity_queue_alert(struct demo_connection *conn,
                                       struct tlmsp_cfg_alert *alert,
                                       bool present);
 static void demo_activity_time_triggered_cb(EV_P_ ev_timer *w, int revents);
+static bool demo_activity_log_payload_data(struct demo_connection *conn,
+                                           struct tlmsp_cfg_payload *payload,
+                                           struct match_groups *match_groups,
+                                           const uint8_t **buf, size_t *len,
+                                           bool *free_data);
 static bool demo_activity_get_payload_data(struct demo_connection *conn,
                                            struct tlmsp_cfg_payload *payload,
                                            struct match_groups *match_groups,
@@ -132,6 +141,8 @@ static bool demo_activity_apply_actions(struct demo_connection *activity_conn,
                                         struct tlmsp_cfg_activity *activity,
                                         struct match_groups *match_groups, bool sends,
                                         bool replies);
+static bool demo_activity_forward_match(struct demo_connection *log_conn, struct container_queue *read_q,
+                                        struct container_queue *write_q, struct container_queue_range *match_range);
 static bool demo_activity_drop_or_forward_match_preamble(struct demo_connection *log_conn,
                                                          struct container_queue *read_q,
                                                          struct container_queue *write_q,
@@ -289,6 +300,34 @@ demo_activity_conn_start_time_triggered(struct demo_connection *from_conn)
 }
 
 static bool
+demo_activity_log_payload(struct demo_connection *conn,
+			  struct tlmsp_cfg_payload *payload, struct match_groups *match_groups,
+			  bool present) {
+	const uint8_t *data;
+	size_t len;
+	bool result;
+	bool free_data;
+
+	/* skip if the payload is not configured */
+	if (payload->type == TLMSP_CFG_PAYLOAD_NONE)
+		return (true);
+
+	data = NULL;
+	free_data = false;
+	result = false;
+	if (!demo_activity_log_payload_data(conn, payload, match_groups, &data,
+		&len, &free_data))
+		goto out;
+
+	result = true;
+
+ out:
+	if ((data != NULL) && free_data)
+		free((void *) data);
+	return (result);
+}
+
+static bool
 demo_activity_queue_payload(struct demo_connection *conn,
     struct tlmsp_cfg_payload *payload, struct match_groups *match_groups,
     bool present)
@@ -412,6 +451,33 @@ demo_activity_time_triggered_cb(EV_P_ ev_timer *w, int revents)
 		w->repeat = msg->interval;
 		ev_timer_again(EV_A_ w);
 	}
+}
+
+static bool
+demo_activity_log_payload_data(struct demo_connection *conn,
+    struct tlmsp_cfg_payload *payload, struct match_groups *match_groups,
+    const uint8_t **buf, size_t *len, bool *free_data)
+{
+	switch (payload->type) {
+	case TLMSP_CFG_PAYLOAD_NONE:
+		*buf = NULL;
+		*len = 0;
+		break;
+	case TLMSP_CFG_PAYLOAD_FILE:
+		//Implement
+		break;
+	case TLMSP_CFG_PAYLOAD_HANDLER:
+		if (!demo_activity_run_payload_handler(conn, payload,
+			match_groups, buf, len))
+			return (false);
+		break;
+	default:
+		//Shouldn't happen
+		break;
+	}
+	*free_data = true;
+
+	return (true);
 }
 
 static bool
@@ -1347,22 +1413,36 @@ demo_activity_apply_match_actions(struct demo_connection *inbound_conn,
 
 	is_endpoint = (inbound_conn->splice == NULL);
 	outbound_conn = demo_activity_get_dataflow_conn(inbound_conn, false);
-	if (!demo_activity_drop_or_forward_match_preamble(outbound_conn,
-		&inbound_conn->read_queue, &outbound_conn->write_queue,
-		match_range, is_endpoint)) {
-		return (false);
-	}
+        if(!activity->match.forward)
+        {
+		if (!demo_activity_drop_or_forward_match_preamble(outbound_conn,
+			&inbound_conn->read_queue, &outbound_conn->write_queue,
+			match_range, is_endpoint)) {
+			return (false);
+		}
+        }
 
 	if (!demo_activity_apply_actions(inbound_conn, activity,
 		&match_state->match_groups, true, true))
 		return (false);
 
-	if (!demo_activity_drop_or_delete_match(outbound_conn,
-		&inbound_conn->read_queue, &outbound_conn->write_queue,
-		match_range, is_endpoint)) {
-		return (false);
-	}
+        if(!activity->match.forward)
+        {
+		if (!demo_activity_drop_or_delete_match(outbound_conn,
+			&inbound_conn->read_queue, &outbound_conn->write_queue,
+			match_range, is_endpoint)) {
+			return (false);
+		}
+        }
 
+        if(activity->match.forward)
+        {
+		if (!demo_activity_forward_match(outbound_conn,
+                                                 &inbound_conn->read_queue, &outbound_conn->write_queue,
+                                                 match_range)) {
+			return (false);
+		}
+        }
 	return (true);
 }
 
@@ -1396,6 +1476,11 @@ demo_activity_apply_actions(struct demo_connection *activity_conn,
 			if (!demo_activity_queue_payload(outbound_conn,
 				&action->send, match_groups, activity->present))
 				return (false);
+		} else if (TLMSP_CFG_PAYLOAD_ENABLED(&action->log)) {
+			demo_conn_log(5, activity_conn, "Applying log action");
+			if (!demo_activity_log_payload(activity_conn,
+				&action->log, match_groups, activity->present))
+				return (false);
 		} else if (action->alert.level != TLMSP_CFG_ACTION_ALERT_LEVEL_NONE) {
 			if (!demo_activity_queue_alert(send_conn,
 				&action->alert, activity->present))
@@ -1425,6 +1510,34 @@ demo_activity_apply_actions(struct demo_connection *activity_conn,
 }
 
 static bool
+demo_activity_forward_match(struct demo_connection *log_conn,
+    struct container_queue *read_q, struct container_queue *write_q,
+    struct container_queue_range *match_range)
+{
+	TLMSP_Container *container;
+
+	demo_conn_log(5, log_conn, "Forward match preamble and contents");
+
+	while (true) {
+		container = container_queue_head(read_q);
+		container_queue_remove_head(read_q);
+		demo_conn_log(5, log_conn, "Forwarding container "
+		    "(context=%u, length=%zu)",
+		    TLMSP_container_context(container),
+		    TLMSP_container_length(container));
+		if (!container_queue_add(write_q, container)) {
+			demo_conn_print_error(log_conn,
+			    "Failed to add container to write queue");
+			return (false);
+		}
+		if(container == match_range->last->container)
+			break;
+	}
+
+	return (true);
+}
+
+static bool
 demo_activity_drop_or_forward_match_preamble(struct demo_connection *log_conn,
     struct container_queue *read_q, struct container_queue *write_q,
     struct container_queue_range *match_range, bool drop)
@@ -1432,7 +1545,7 @@ demo_activity_drop_or_forward_match_preamble(struct demo_connection *log_conn,
 	SSL *read_q_ssl = read_q->conn->ssl;
 	TLMSP_Container *container, *new_container;
 	const uint8_t *src;
-	
+
 	if (drop)
 		demo_conn_log(5, log_conn, "Drop match preamble");
 	else
@@ -1466,7 +1579,7 @@ demo_activity_drop_or_forward_match_preamble(struct demo_connection *log_conn,
 	 */
 	if (match_range->first_offset != 0) {
 		container = container_queue_remove_head(read_q);
-		src = TLMSP_container_get_data(container); 
+		src = TLMSP_container_get_data(container);
 
 		/*
 		 * Create a new container with the preamble data removed.
@@ -1481,7 +1594,7 @@ demo_activity_drop_or_forward_match_preamble(struct demo_connection *log_conn,
 			    "match preamble data");
 			return (false);
 		}
-		
+
 		if (drop) {
 			demo_conn_log(5, log_conn, "Freeing preamble/match "
 			    "container (context=%u, length=%zu)",

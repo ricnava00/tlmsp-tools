@@ -66,7 +66,8 @@ struct tlmsp_cfg_activity {
 	struct tlmsp_cfg_match {
 		unsigned int num_contexts;
 		struct tlmsp_cfg_context **contexts;
-		bool initial;  /* at was specified with 0 value */
+		bool forward;
+                bool initial;  /* at was specified with 0 value */
 		double at;
 		double every;
 		struct {
@@ -107,6 +108,7 @@ struct tlmsp_cfg_activity {
 		} fault;
 		bool renegotiate;
 		bool shutdown;
+		struct tlmsp_cfg_payload log;
 		struct tlmsp_cfg_payload send;
 		struct tlmsp_cfg_alert {
 			/* The context pointer will be NULL for context 0 */

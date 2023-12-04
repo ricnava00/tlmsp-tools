@@ -242,7 +242,8 @@ const struct value_type cfg_format =
 					   STRING_SET(ACTIVITY_MATCH_CONTAINER_ALL, "*", "all")),
                                        KEY("data", STRING(ACTIVITY_MATCH_DATA)),
                                        KEY("file", STRING(ACTIVITY_MATCH_FILE)),
-                                       KEY("regex", STRING(ACTIVITY_MATCH_REGEX)))),
+                                       KEY("regex", STRING(ACTIVITY_MATCH_REGEX)),
+                                       KEY("forward", BOOLEAN(ACTIVITY_MATCH_FORWARD)))),
                            KEY("action",
                                 OBJECT_ARRAY(ACTIVITY_ACTION,
 #ifdef notyet
@@ -254,6 +255,12 @@ const struct value_type cfg_format =
                                                  { "drop",           TLMSP_CFG_ACTION_FAULT_DROP },
                                                  { "reorder",        TLMSP_CFG_ACTION_FAULT_REORDER } )),
 #endif
+                                       KEY("log",
+                                            OBJECT_ARRAY(ACTIVITY_ACTION_LOG,
+#ifdef notyet
+                                                   KEY("file", STRING(ACTIVITY_ACTION_LOG_FILE)),
+#endif
+                                                   KEY("handler", STRING(ACTIVITY_ACTION_LOG_HANDLER)))),
                                        KEY("send",
                                             OBJECT_ARRAY(ACTIVITY_ACTION_SEND,
                                                    KEY("context",
@@ -972,10 +979,14 @@ fmt_value_tag_name(enum value_tag tag)
 		HANDLE(VALUE_TAG_ACTIVITY_MATCH_DATA);
 		HANDLE(VALUE_TAG_ACTIVITY_MATCH_FILE);
 		HANDLE(VALUE_TAG_ACTIVITY_MATCH_REGEX);
+		HANDLE(VALUE_TAG_ACTIVITY_MATCH_FORWARD);
 		HANDLE(VALUE_TAG_ACTIVITY_ACTION);
 		HANDLE(VALUE_TAG_ACTIVITY_ACTION_FAULT);
 		HANDLE(VALUE_TAG_ACTIVITY_ACTION_RENEGOTIATE);
 		HANDLE(VALUE_TAG_ACTIVITY_ACTION_SHUTDOWN);
+		HANDLE(VALUE_TAG_ACTIVITY_ACTION_LOG);
+		HANDLE(VALUE_TAG_ACTIVITY_ACTION_LOG_FILE);
+		HANDLE(VALUE_TAG_ACTIVITY_ACTION_LOG_HANDLER);
 		HANDLE(VALUE_TAG_ACTIVITY_ACTION_SEND);
 		HANDLE(VALUE_TAG_ACTIVITY_ACTION_SEND_CONTEXT_ID);
 		HANDLE(VALUE_TAG_ACTIVITY_ACTION_SEND_CONTEXT_TAG);

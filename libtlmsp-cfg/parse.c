@@ -161,6 +161,8 @@ static bool add_tag_to_activity_list(struct activity_list *cl, const char *tag);
 static struct tlmsp_cfg_activity *get_activity_by_tag(struct tlmsp_cfg *cfg,
                                                       const char *tag);
 static void initialize_cfg_payload(struct tlmsp_cfg_payload *cfg);
+static bool check_log_payload(struct iteration_state *state,
+                              struct tlmsp_cfg_payload *payload, const char *name);
 static bool check_cfg_payload(struct iteration_state *state,
                               struct tlmsp_cfg_payload *payload, const char *name);
 static bool set_cfg_payload_context_by_id(struct iteration_state *state,
@@ -536,6 +538,7 @@ handle_value_tag_start_do(struct iteration_state *state, enum value_tag tag,
         case VALUE_TAG_ACTIVITY_MATCH_DATA:
         case VALUE_TAG_ACTIVITY_MATCH_FILE:
         case VALUE_TAG_ACTIVITY_MATCH_REGEX:
+        case VALUE_TAG_ACTIVITY_MATCH_FORWARD:
 		/* nothing to do */
 		break;
         case VALUE_TAG_ACTIVITY_ACTION:
@@ -546,6 +549,7 @@ handle_value_tag_start_do(struct iteration_state *state, enum value_tag tag,
 		break;
         case VALUE_TAG_ACTIVITY_ACTION_FAULT:
 	case VALUE_TAG_ACTIVITY_ACTION_RENEGOTIATE:
+        case VALUE_TAG_ACTIVITY_ACTION_LOG:
         case VALUE_TAG_ACTIVITY_ACTION_SEND:
 	case VALUE_TAG_ACTIVITY_ACTION_REPLY:
 	case VALUE_TAG_ACTIVITY_ACTION_ALERT:
@@ -575,8 +579,10 @@ handle_value_tag_start_do(struct iteration_state *state, enum value_tag tag,
 		break;
 	case VALUE_TAG_ACTIVITY_ACTION_SEND_DATA:
 	case VALUE_TAG_ACTIVITY_ACTION_REPLY_DATA:
+        case VALUE_TAG_ACTIVITY_ACTION_LOG_FILE:
         case VALUE_TAG_ACTIVITY_ACTION_SEND_FILE:
 	case VALUE_TAG_ACTIVITY_ACTION_REPLY_FILE:
+	case VALUE_TAG_ACTIVITY_ACTION_LOG_HANDLER:
 	case VALUE_TAG_ACTIVITY_ACTION_SEND_HANDLER:
 	case VALUE_TAG_ACTIVITY_ACTION_REPLY_HANDLER:
         case VALUE_TAG_ACTIVITY_ACTION_SEND_TEMPLATE:
@@ -802,6 +808,11 @@ handle_value_tag_finish(struct iteration_state *state, enum value_tag tag,
 			ERRBUF("'which' key does not apply to time matches");
 			return (false);
 		}
+		if (has_time_match &&
+		    (HAS_VALUE_TAG(ACTIVITY_MATCH_FORWARD))) {
+			ERRBUF("'forward' key does not apply to time matches");
+			return (false);
+		}
 		if ((has_container_match || has_pattern_match) &&
 		    !HAS_VALUE_TAG(ACTIVITY_MATCH_WHICH_IDS) &&
 		    !HAS_VALUE_TAG(ACTIVITY_MATCH_WHICH_TAGS)) {
@@ -820,6 +831,9 @@ handle_value_tag_finish(struct iteration_state *state, enum value_tag tag,
 			value->type_string))
 			return (false);
 		break;
+        case VALUE_TAG_ACTIVITY_MATCH_FORWARD:
+                state->cur_activity->match.forward = value->type_boolean;
+                break;
         case VALUE_TAG_ACTIVITY_MATCH_AT:
 		if (value->type_int == 0)
 			state->cur_activity->match.initial = true;
@@ -876,6 +890,12 @@ handle_value_tag_finish(struct iteration_state *state, enum value_tag tag,
 	case VALUE_TAG_ACTIVITY_ACTION_SHUTDOWN:
 		state->cur_action->shutdown = value->type_boolean;
 		break;
+        case VALUE_TAG_ACTIVITY_ACTION_LOG:
+		if (!check_log_payload(state,
+			&state->cur_action->log,
+			"log"))
+			return (false);
+		break;
         case VALUE_TAG_ACTIVITY_ACTION_SEND:
 	case VALUE_TAG_ACTIVITY_ACTION_REPLY:
 		if (!check_cfg_payload(state,
@@ -906,10 +926,18 @@ handle_value_tag_finish(struct iteration_state *state, enum value_tag tag,
 			&state->cur_action->send, value->type_string))
 			return (false);
 		break;
+        case VALUE_TAG_ACTIVITY_ACTION_LOG_FILE:
+		//Implement
+		break;
         case VALUE_TAG_ACTIVITY_ACTION_SEND_FILE:
 	case VALUE_TAG_ACTIVITY_ACTION_REPLY_FILE:
 		if (!set_cfg_payload_file(state,
 			&state->cur_action->send, value->type_string))
+			return (false);
+		break;
+        case VALUE_TAG_ACTIVITY_ACTION_LOG_HANDLER:
+		if (!set_cfg_payload_handler(state,
+			&state->cur_action->log, value->type_string))
 			return (false);
 		break;
         case VALUE_TAG_ACTIVITY_ACTION_SEND_HANDLER:
@@ -1558,6 +1586,20 @@ initialize_cfg_payload(struct tlmsp_cfg_payload *cfg)
 }
 
 static bool
+check_log_payload(struct iteration_state *state,
+    struct tlmsp_cfg_payload *payload, const char *name)
+{
+
+	if (payload->type == TLMSP_CFG_PAYLOAD_NONE) {
+		ERRBUF("payload specification is missing from '%s' action",
+		    name);
+		return (false);
+	}	
+
+	return (true);
+}
+
+static bool
 check_cfg_payload(struct iteration_state *state,
     struct tlmsp_cfg_payload *payload, const char *name)
 {
@@ -1571,7 +1613,7 @@ check_cfg_payload(struct iteration_state *state,
 		ERRBUF("payload specification is missing from '%s' action",
 		    name);
 		return (false);
-	}	
+	}
 
 	return (true);
 }
@@ -1898,12 +1940,21 @@ check_cfg_middlebox_activity(struct iteration_state *state,
 	 */
 	for (i = 0; i < activity->match.num_contexts; i++) {
 		context = activity->match.contexts[i];
-		if (context_access[context->id] == TLMSP_CFG_CTX_ACCESS_NONE) {
+		if (!activity->match.forward && context_access[context->id] != TLMSP_CFG_CTX_ACCESS_RW) {
 			if (context->tag[0] != '\0')
-				ERRBUF("middlebox %s activity %s requires read "
+				ERRBUF("middlebox %s activity %s (without forward) requires write "
 				    "access to context %s", cfg->tag, activity->tag, context->tag);
 			else
-				ERRBUF("middlebox %s activity %s requires read "
+				ERRBUF("middlebox %s activity %s (without forward) requires write "
+				    "access to context %u", cfg->tag, activity->tag, context->id);
+			return (false);
+		}
+		if (activity->match.forward && context_access[context->id] != TLMSP_CFG_CTX_ACCESS_R) {
+			if (context->tag[0] != '\0')
+				ERRBUF("middlebox %s activity %s (with forward) requires EXACTLY read "
+				    "access to context %s", cfg->tag, activity->tag, context->tag);
+			else
+				ERRBUF("middlebox %s activity %s (with forward) requires EXACTLY read "
 				    "access to context %u", cfg->tag, activity->tag, context->id);
 			return (false);
 		}

@@ -119,7 +119,8 @@ static bool demo_activity_load_payload_file(struct demo_connection *conn,
 static bool demo_activity_run_payload_handler(struct demo_connection *log_conn,
                                               struct tlmsp_cfg_payload *payload,
                                               struct match_groups *match_groups,
-                                              const uint8_t **buf, size_t *len);
+                                              const uint8_t **buf, size_t *len,
+                                              bool connection_info_as_arguments);
 static void demo_activity_handler_stdin_cb(EV_P_ ev_io *w, int revents);
 static void demo_activity_handler_stdout_cb(EV_P_ ev_io *w, int revents);
 static void demo_activity_handler_stderr_cb(EV_P_ ev_io *w, int revents);
@@ -468,7 +469,7 @@ demo_activity_log_payload_data(struct demo_connection *conn,
 		break;
 	case TLMSP_CFG_PAYLOAD_HANDLER:
 		if (!demo_activity_run_payload_handler(conn, payload,
-			match_groups, buf, len))
+			match_groups, buf, len, true))
 			return (false);
 		break;
 	default:
@@ -504,7 +505,7 @@ demo_activity_get_payload_data(struct demo_connection *conn,
 		break;
 	case TLMSP_CFG_PAYLOAD_HANDLER:
 		if (!demo_activity_run_payload_handler(conn, payload,
-			match_groups, buf, len))
+			match_groups, buf, len, false))
 			return (false);
 		break;
 	case TLMSP_CFG_PAYLOAD_TEMPLATE:
@@ -536,13 +537,14 @@ demo_activity_load_payload_file(struct demo_connection *conn,
 static bool
 demo_activity_run_payload_handler(struct demo_connection *log_conn,
     struct tlmsp_cfg_payload *payload, struct match_groups *match_groups,
-    const uint8_t **buf, size_t *len)
+    const uint8_t **buf, size_t *len, bool connection_info_as_arguments)
 {
 	int stdin_pipe[2];  /* handler's stdin */
 	int stdout_pipe[2]; /* handler's stdout */
 	int stderr_pipe[2]; /* handler's stderr */
 	pid_t child_pid;
-	
+	int execlp_result;
+
 	demo_conn_log(5, log_conn, "Running handler '%s'", payload->param.cmd);
 	if (pipe2(stdin_pipe, O_NONBLOCK) == -1) {
 		demo_conn_print_errno(log_conn,
@@ -586,7 +588,17 @@ demo_activity_run_payload_handler(struct demo_connection *log_conn,
 		close(stderr_pipe[PIPE_READ_FD]);
 		close(stderr_pipe[PIPE_WRITE_FD]);
 
-		if (execlp("/usr/bin/stdbuf", "stdbuf", "-i0", "-o0", "-e0", "/bin/sh", "-c", payload->param.cmd, NULL) == -1) {
+		if(connection_info_as_arguments)
+		{
+			char cmd_buf[strlen(payload->param.cmd) + 1 + 20 + 1 + 20 + 1 + 1];
+			sprintf(cmd_buf, "%s %" PRIu64 " %" PRIu64 " %d", payload->param.cmd, log_conn->id, log_conn->splice->id, log_conn->to_client);
+			execlp_result=execlp("/usr/bin/stdbuf", "stdbuf", "-i0", "-o0", "-e0", "/bin/sh", "-c", cmd_buf, NULL);
+		}
+		else
+		{
+			execlp_result=execlp("/usr/bin/stdbuf", "stdbuf", "-i0", "-o0", "-e0", "/bin/sh", "-c", payload->param.cmd, NULL);
+		}
+		if (execlp_result == -1) {
 			fprintf(stderr,
 			    "Failed to exec /bin/sh for handler '%s'\n",
 			    payload->param.cmd);

@@ -1949,15 +1949,26 @@ check_cfg_middlebox_activity(struct iteration_state *state,
 				    "access to context %u", cfg->tag, activity->tag, context->id);
 			return (false);
 		}
+		if (activity->match.forward && context_access[context->id] == TLMSP_CFG_CTX_ACCESS_NONE) {
+			if (context->tag[0] != '\0')
+				ERRBUF("middlebox %s activity %s (with forward) requires at least read "
+				       "access to context %s", cfg->tag, activity->tag, context->tag);
+			else
+				ERRBUF("middlebox %s activity %s (with forward) requires at least read "
+				       "access to context %u", cfg->tag, activity->tag, context->id);
+			return (false);
+		}
+/*
 		if (activity->match.forward && context_access[context->id] != TLMSP_CFG_CTX_ACCESS_R) {
 			if (context->tag[0] != '\0')
 				ERRBUF("middlebox %s activity %s (with forward) requires EXACTLY read "
-				    "access to context %s", cfg->tag, activity->tag, context->tag);
+				       "access to context %s", cfg->tag, activity->tag, context->tag);
 			else
 				ERRBUF("middlebox %s activity %s (with forward) requires EXACTLY read "
-				    "access to context %u", cfg->tag, activity->tag, context->id);
+				       "access to context %u", cfg->tag, activity->tag, context->id);
 			return (false);
 		}
+*/
 	}
 
 	/*

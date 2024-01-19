@@ -505,7 +505,7 @@ demo_activity_get_payload_data(struct demo_connection *conn,
 		break;
 	case TLMSP_CFG_PAYLOAD_HANDLER:
 		if (!demo_activity_run_payload_handler(conn, payload,
-			match_groups, buf, len, false))
+			match_groups, buf, len, true))
 			return (false);
 		break;
 	case TLMSP_CFG_PAYLOAD_TEMPLATE:
@@ -532,6 +532,60 @@ demo_activity_load_payload_file(struct demo_connection *conn,
 	}
 
 	return (true);
+}
+
+// https://stackoverflow.com/a/779960/23244567
+// You must free the result if result is non-NULL.
+char *str_replace(char *orig, char *rep, char *with) {
+	char *result = NULL; // the return string
+	char *ins;    // the next insert point
+	char *tmp;    // varies
+	size_t len_rep;  // length of rep (the string to remove)
+	size_t len_with; // length of with (the string to replace rep with)
+	size_t len_front; // distance between rep and end of last rep
+	int count;    // number of replacements
+
+	// sanity checks and initialization
+	if (!orig || !rep)
+		return NULL;
+	len_rep = strlen(rep);
+	if (len_rep == 0)
+		return NULL; // empty rep causes infinite loop during count
+	if (!with)
+		with = "";
+	len_with = strlen(with);
+
+	// count the number of replacements needed
+	ins = orig;
+	for (count = 0; (tmp = strstr(ins, rep)); ++count) {
+		ins = tmp + len_rep;
+	}
+
+	if (!count) {
+		result = malloc(strlen(orig));
+		strcpy(result, orig);
+		return result;
+	}
+
+	tmp = result = malloc(strlen(orig) + (len_with - len_rep) * count + 1);
+
+	if (!result)
+		return NULL;
+
+	// first time through the loop, all the variable are set correctly
+	// from here on,
+	//    tmp points to the end of the result string
+	//    ins points to the next occurrence of rep in orig
+	//    orig points to the remainder of orig after "end of rep"
+	while (count--) {
+		ins = strstr(orig, rep);
+		len_front = ins - orig;
+		tmp = strncpy(tmp, orig, len_front) + len_front;
+		tmp = strcpy(tmp, with) + len_with;
+		orig += len_front + len_rep; // move to next "end of rep"
+	}
+	strcpy(tmp, orig);
+	return result;
 }
 
 static bool
@@ -590,13 +644,17 @@ demo_activity_run_payload_handler(struct demo_connection *log_conn,
 
 		if(connection_info_as_arguments)
 		{
-			char cmd_buf[strlen(payload->param.cmd) + 1 + 20 + 1 + 20 + 1 + 1];
-			sprintf(cmd_buf, "%s %" PRIu64 " %" PRIu64 " %d", payload->param.cmd, log_conn->id, log_conn->splice->id, log_conn->to_client);
-			execlp_result=execlp("/usr/bin/stdbuf", "stdbuf", "-i0", "-o0", "-e0", "/bin/sh", "-c", cmd_buf, NULL);
+			size_t chars = 20 + 1 + 20 + 1 + 1 + 1;
+			char params_buf[chars];
+			snprintf(params_buf, chars, "%" PRIu64 " %" PRIu64 " %d", log_conn->id, log_conn->splice->id, log_conn->to_client);
+			char *orig = malloc(strlen(payload->param.cmd) + 1);
+			strcpy(orig, payload->param.cmd);
+			char *replaced = str_replace(orig, "{}", params_buf);
+			execlp_result = execlp("/usr/bin/stdbuf", "stdbuf", "-i0", "-o0", "-e0", "/bin/sh", "-c", replaced, NULL);
 		}
 		else
 		{
-			execlp_result=execlp("/usr/bin/stdbuf", "stdbuf", "-i0", "-o0", "-e0", "/bin/sh", "-c", payload->param.cmd, NULL);
+			execlp_result = execlp("/usr/bin/stdbuf", "stdbuf", "-i0", "-o0", "-e0", "/bin/sh", "-c", payload->param.cmd, NULL);
 		}
 		if (execlp_result == -1) {
 			fprintf(stderr,

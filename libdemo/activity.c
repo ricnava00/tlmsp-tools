@@ -1548,7 +1548,7 @@ demo_activity_apply_actions(struct demo_connection *activity_conn,
 				return (false);
 		} else if (TLMSP_CFG_PAYLOAD_ENABLED(&action->log)) {
 			demo_conn_log(5, activity_conn, "Applying log action");
-			if (!demo_activity_log_payload(activity_conn,
+			if (!demo_activity_log_payload(send_conn,
 				&action->log, match_groups, activity->present))
 				return (false);
 		} else if (action->alert.level != TLMSP_CFG_ACTION_ALERT_LEVEL_NONE) {

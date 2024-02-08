@@ -728,7 +728,14 @@ demo_activity_run_payload_handler(struct demo_connection *log_conn,
 		close(stdout_pipe[PIPE_READ_FD]);
 		close(stderr_pipe[PIPE_READ_FD]);
 
-		return (state.success);
+		if (!state.success)
+		{
+			return (false);
+		}
+		int status=0;
+		waitpid(child_pid, &status, 0);
+		demo_conn_log(5, log_conn, "Handler exited with status code %d", WEXITSTATUS(status));
+		return(WIFEXITED(status) && WEXITSTATUS(status) == 0);
 	}
 
 	demo_conn_print_errno(log_conn, "Fork failed for handler '%s'",

@@ -325,22 +325,28 @@ static void
 demo_conn_base_print_preamble(struct demo_connection *conn, int fd, bool present)
 {
 
+	struct timespec ts;
+	clock_gettime(CLOCK_REALTIME, &ts);
 	if (conn->splice != NULL) {
 		if (demo_tag != NULL) {
-			dprintf(fd, "%s[%d:%s]: splice %" PRIu64 " (%s): ",
-			    demo_progname, demo_pid, demo_tag, conn->splice->id,
-			    conn->to_client ? "client-side" : "server-side");
+			dprintf(fd, "%ld%09ld %s[%d:%s]: splice %" PRIu64 " (%s): ",
+				ts.tv_sec, ts.tv_nsec,
+				demo_progname, demo_pid, demo_tag, conn->splice->id,
+				conn->to_client ? "client-side" : "server-side");
 		} else {
-			dprintf(fd, "%s[%d]: splice %" PRIu64 " (%s): ",
+			dprintf(fd, "%ld%09ld %s[%d]: splice %" PRIu64 " (%s): ",
+				ts.tv_sec, ts.tv_nsec,
 			    demo_progname, demo_pid, conn->splice->id,
 			    conn->to_client ? "client-side" : "server-side");
 		}
 	} else {
 		if (demo_tag != NULL) {
-			dprintf(fd, "%s[%d:%s]: connection %" PRIu64 ": ",
+			dprintf(fd, "%ld%09ld %s[%d:%s]: connection %" PRIu64 ": ",
+				ts.tv_sec, ts.tv_nsec,
 			    demo_progname, demo_pid, demo_tag, conn->id);
 		} else {
-			dprintf(fd, "%s[%d]: connection %" PRIu64 ": ",
+			dprintf(fd, "%ld%09ld %s[%d]: connection %" PRIu64 ": ",
+				ts.tv_sec, ts.tv_nsec,
 			    demo_progname, demo_pid, conn->id);
 		}
 	}
